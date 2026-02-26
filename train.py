@@ -6,7 +6,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 import yaml
 import os
@@ -63,8 +63,6 @@ def train():
         bias="none",
         task_type="CAUSAL_LM"
     )
-    model = get_peft_model(model, lora_config)
-
     # 5. Load Dataset
     dataset = load_from_disk(dataset_path)
 
