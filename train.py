@@ -68,28 +68,23 @@ def train():
 
     # Format dataset for Llama 3 Instruct
     def formatting_prompts_func(example):
-        output_texts = []
-        for i in range(len(example['instruction'])):
-            instruction = example['instruction'][i]
-            input_text = example['input'][i]
-            output = example['output'][i]
-            
-            # Construct Llama 3 format
-            # <|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nSystem Prompt<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nUser Prompt<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n
-            
-            user_content = instruction
-            if input_text:
-                user_content += f"\nInput:\n{input_text}"
-            
-            messages = [
-                {"role": "system", "content": "You are a helpful AI assistant for learning English and German grammar and pronunciation."},
-                {"role": "user", "content": user_content},
-                {"role": "assistant", "content": output}
-            ]
-            
-            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-            output_texts.append(text)
-        return output_texts
+        instruction = example['instruction']
+        input_text = example['input']
+        output = example['output']
+        
+        # Construct Llama 3 format
+        user_content = instruction
+        if input_text:
+            user_content += f"\nInput:\n{input_text}"
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful AI assistant for learning English and German grammar and pronunciation."},
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": output}
+        ]
+        
+        # The SFTTrainer expects a field named "text"
+        return {"text": tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)}
 
     # 6. SFTConfig (replaces TrainingArguments)
     training_args = SFTConfig(
@@ -117,6 +112,7 @@ def train():
         train_dataset=dataset,
         peft_config=lora_config,
         formatting_func=formatting_prompts_func,
+        dataset_text_field="text", 
         args=training_args,
     )
 
