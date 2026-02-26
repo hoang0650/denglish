@@ -7,7 +7,7 @@ from transformers import (
     TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 import yaml
 import os
 import wandb
@@ -93,8 +93,8 @@ def train():
             output_texts.append(text)
         return output_texts
 
-    # 6. Training Arguments
-    training_args = TrainingArguments(
+    # 6. SFTConfig (replaces TrainingArguments)
+    training_args = SFTConfig(
         output_dir=output_dir,
         per_device_train_batch_size=config["training"]["per_device_train_batch_size"],
         gradient_accumulation_steps=config["training"]["gradient_accumulation_steps"],
@@ -109,6 +109,9 @@ def train():
         report_to="wandb",
         run_name=wandb_project,
         gradient_checkpointing=True,
+        max_seq_length=2048, # Moved from SFTTrainer to SFTConfig
+        dataset_text_field=None, # Explicitly set to None as we use formatting_func
+        packing=False,
     )
 
     # 7. Trainer
@@ -117,7 +120,6 @@ def train():
         train_dataset=dataset,
         peft_config=lora_config,
         formatting_func=formatting_prompts_func,
-        max_seq_length=2048, # Increased for Llama 3 context
         tokenizer=tokenizer,
         args=training_args,
     )
