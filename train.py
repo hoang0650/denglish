@@ -109,7 +109,6 @@ def train():
         report_to="wandb",
         run_name=wandb_project,
         gradient_checkpointing=True,
-        max_seq_length=2048, # Moved from SFTTrainer to SFTConfig
         dataset_text_field=None, # Explicitly set to None as we use formatting_func
         packing=False,
     )
