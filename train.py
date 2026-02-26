@@ -50,7 +50,7 @@ def train():
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        attn_implementation="flash_attention_2" if torch.cuda.get_device_capability()[0] >= 8 else "eager"
+        attn_implementation="eager"
     )
     model = prepare_model_for_kbit_training(model)
 
