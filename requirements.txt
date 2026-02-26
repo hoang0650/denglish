@@ -1,0 +1,14 @@
+torch
+transformers
+datasets
+peft
+trl
+bitsandbytes
+faster-whisper
+edge-tts
+huggingface_hub
+pandas
+PyYAML
+wandb
+Pillow
+pytesseract

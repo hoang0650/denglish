@@ -1,0 +1,44 @@
+model:
+  id: "unsloth/llama-3-8b-Instruct-bnb-4bit" # Recommended efficient model for local use
+  dataset_path: "./processed_dataset"
+  output_dir: "./tutor_model_output"
+
+training:
+  per_device_train_batch_size: 2 # Reduced for 8B model on typical consumer GPU
+  gradient_accumulation_steps: 4
+  learning_rate: 2e-4
+  logging_steps: 10
+  max_steps: 500
+  save_steps: 100
+  fp16: True
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+
+wandb:
+  project: "english-german-tutor"
+  entity: "your_wandb_entity" # Replace with your entity
+
+huggingface:
+  repo_name: "phgrouptechs/Denglish-8B-Instruct"
+
+voice:
+  stt_model: "small" # base, small, medium
+  voice_en: "en-US-EmmaNeural"
+  voice_de: "de-DE-KatjaNeural"
+  voice_vn: "vi-VN-HoaiMyNeural"
+
+vision:
+  ocr_enabled: True
+  ocr_lang: "eng+deu+vie"
+  preprocessing:
+    grayscale: True
+    threshold: True
+  analysis_prompt: |
+    Analyze the following text extracted from an image. 
+    Identify if it contains English or German grammar exercises, vocabulary lists, or reading passages.
+    If there are errors in the text (e.g. user handwriting), correct them.
+    Provide a helpful explanation in Vietnamese about the grammar points or vocabulary found.
+    
+    Extracted Text:
+    {text}
