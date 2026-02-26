@@ -8,7 +8,6 @@ from transformers import (
 )
 from peft import LoraConfig, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
-from formatting_utils import formatting_prompts_func
 import yaml
 import os
 import wandb
@@ -66,6 +65,25 @@ def train():
     )
     # 5. Load Dataset
     dataset = load_from_disk(dataset_path)
+
+    def formatting_prompts_func(example):
+        instruction = example['instruction']
+        input_text = example['input']
+        output = example['output']
+        
+        # Construct Llama 3 format
+        user_content = instruction
+        if input_text:
+            user_content += f"\nInput:\n{input_text}"
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful AI assistant for learning English and German grammar and pronunciation."},
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": output}
+        ]
+        
+        # The SFTTrainer expects a field named "text"
+        return {"text": tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)}
 
     # Format and pre-process the dataset
     dataset = dataset.map(formatting_prompts_func)
