@@ -104,8 +104,8 @@ def train():
         push_to_hub=False,
         report_to="wandb",
         run_name=wandb_project,
-        gradient_checkpointing=True,
-        packing=False,
+        gradient_checkpointing=False,
+        packing=True,
         dataset_text_field="text",
     )
 
