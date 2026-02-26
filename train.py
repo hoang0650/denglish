@@ -119,7 +119,6 @@ def train():
         train_dataset=dataset,
         peft_config=lora_config,
         formatting_func=formatting_prompts_func,
-        tokenizer=tokenizer,
         args=training_args,
     )
 
