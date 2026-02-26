@@ -83,8 +83,8 @@ def train():
             {"role": "assistant", "content": output}
         ]
         
-        # The SFTTrainer expects a field named "text"
-        return {"text": tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)}
+        # The SFTTrainer expects a string as output from the formatting_func
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
 
     # 6. SFTConfig (replaces TrainingArguments)
     training_args = SFTConfig(
@@ -112,7 +112,6 @@ def train():
         train_dataset=dataset,
         peft_config=lora_config,
         formatting_func=formatting_prompts_func,
-        dataset_text_field="text", 
         args=training_args,
     )
 
