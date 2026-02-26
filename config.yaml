@@ -16,8 +16,8 @@ training:
   lora_dropout: 0.05
 
 wandb:
-  project: "english-german-tutor"
-  entity: "your_wandb_entity" # Replace with your entity
+  project: "my-awesome-project"
+  entity: "phgrouptechs-phgroup-technology-solutions-co-ltd" # Replace with your entity
 
 huggingface:
   repo_name: "phgrouptechs/Denglish-8B-Instruct"
