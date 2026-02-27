@@ -36,21 +36,12 @@ def train():
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right" # Fix for fp16
 
-    # 2. BitsAndBytes Config for QLoRA
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16
-    )
-
     # 3. Load Model
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        quantization_config=bnb_config,
+        torch_dtype=torch.float16,
         device_map="auto",
         trust_remote_code=True,
-        attn_implementation="eager"
     )
     model = prepare_model_for_kbit_training(model)
 
@@ -101,6 +92,7 @@ def train():
         optim="paged_adamw_32bit",
         fp16=True,
         bf16=False,
+        max_seq_length=4096,
         push_to_hub=False,
         report_to="wandb",
         run_name=wandb_project,
