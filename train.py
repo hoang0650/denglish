@@ -3,10 +3,8 @@ from datasets import load_from_disk
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    BitsAndBytesConfig,
-    TrainingArguments,
 )
-from peft import LoraConfig, prepare_model_for_kbit_training
+from peft import LoraConfig
 from trl import SFTTrainer, SFTConfig
 import yaml
 import os
@@ -34,18 +32,20 @@ def train():
     # 1. Load Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right" # Fix for fp16
+    tokenizer.padding_side = "right" # Fix for fp16/bf16
 
-    # 3. Load Model
+    # 2. Load Model (Optimized for RTX 5090 - 32GB VRAM)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16, # Optimized: Sử dụng bfloat16 thay cho float16
+        attn_implementation="flash_attention_2", # Tăng tốc x2-x3 lần
         device_map="auto",
         trust_remote_code=True,
     )
-    model = prepare_model_for_kbit_training(model)
+    # Đã gỡ prepare_model_for_kbit_training vì chúng ta không dùng 4-bit/8-bit quantization ở đây.
+    # RTX 5090 dư sức chạy LoRA với bfloat16 gốc.
 
-    # 4. LoRA Config
+    # 3. LoRA Config
     lora_config = LoraConfig(
         r=config["training"]["lora_r"],
         lora_alpha=config["training"]["lora_alpha"],
@@ -54,12 +54,14 @@ def train():
         bias="none",
         task_type="CAUSAL_LM"
     )
-    # 5. Load Dataset
+
+    # 4. Load Dataset
     dataset = load_from_disk(dataset_path)
 
     def formatting_prompts_func(example):
         instruction = example['instruction']
-        input_text = example['input']
+        # Dùng .get() để tránh lỗi nếu key 'input' không tồn tại trong một số dòng data
+        input_text = example.get('input', '') 
         output = example['output']
         
         # Construct Llama 3 format
@@ -79,7 +81,7 @@ def train():
     # Format and pre-process the dataset
     dataset = dataset.map(formatting_prompts_func)
 
-    # 6. SFTConfig (replaces TrainingArguments)
+    # 5. SFTConfig (Thay thế TrainingArguments để tương thích tốt nhất với trl mới)
     training_args = SFTConfig(
         output_dir=output_dir,
         per_device_train_batch_size=config["training"]["per_device_train_batch_size"],
@@ -90,18 +92,27 @@ def train():
         save_strategy="steps",
         save_steps=config["training"]["save_steps"],
         optim="paged_adamw_32bit",
-        fp16=True,
-        bf16=False,
-        sequence_len=4096,
+        fp16=False,
+        bf16=True, # Bắt buộc True cho card đời mới
         push_to_hub=False,
         report_to="wandb",
         run_name=wandb_project,
-        gradient_checkpointing=False,
+        
+        # Tối ưu bộ nhớ và cảnh báo
+        gradient_checkpointing=True, 
+        gradient_checkpointing_kwargs={'use_reentrant': False}, 
         packing=False,
-        dataset_text_field="text",
+        
+        # Tăng tốc nạp dữ liệu cho GPU
+        dataloader_num_workers=4, 
+        dataloader_pin_memory=True, 
+        
+        # Các tham số đặc thù của SFTConfig
+        dataset_text_field="text", 
+        max_seq_length=4096, # Đã sửa từ sequence_len
     )
 
-    # 7. Trainer
+    # 6. Trainer
     trainer = SFTTrainer(
         model=model,
         train_dataset=dataset,
@@ -109,7 +120,7 @@ def train():
         args=training_args,
     )
 
-    # 8. Start Training
+    # 7. Start Training
     print("--- Starting Training with Vision-Enhanced Data ---")
     trainer.train()
     

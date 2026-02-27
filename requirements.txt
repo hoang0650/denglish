@@ -11,5 +11,6 @@ huggingface_hub
 pandas
 PyYAML
 wandb
+flash-attn
 Pillow
 pytesseract
