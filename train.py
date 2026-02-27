@@ -92,11 +92,12 @@ def train():
         optim="paged_adamw_32bit",
         fp16=True,
         bf16=False,
+        sequence_len=4096,
         push_to_hub=False,
         report_to="wandb",
         run_name=wandb_project,
         gradient_checkpointing=False,
-        packing=True,
+        packing=False,
         dataset_text_field="text",
     )
 
