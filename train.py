@@ -109,7 +109,6 @@ def train():
         
         # Các tham số đặc thù của SFTConfig
         dataset_text_field="text", 
-        max_seq_length=4096, # Đã sửa từ sequence_len
     )
 
     # 6. Trainer
