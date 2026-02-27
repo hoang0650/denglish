@@ -17,7 +17,7 @@ hf_repo_id = "phgrouptechs/Denglish-8B-Instruct"
 # Thì ở đây bạn BẮT BUỘC phải đổi tên thành bản gốc (chưa nén) của nó.
 # Ví dụ: "meta-llama/Meta-Llama-3-8B-Instruct" hoặc "NousResearch/Meta-Llama-3-8B-Instruct"
 
-base_model_16bit_id = "ĐIỀN_TÊN_MODEL_GỐC_16_BIT_VÀO_ĐÂY" 
+base_model_16bit_id = "phgrouptechs/Denglish-8B-Instruct" 
 
 print(f"1. Đang tải Bản gốc 16-bit: {base_model_16bit_id}...")
 tokenizer = AutoTokenizer.from_pretrained(base_model_16bit_id)
