@@ -92,7 +92,6 @@ def train():
         optim="paged_adamw_32bit",
         fp16=True,
         bf16=False,
-        max_seq_length=4096,
         push_to_hub=False,
         report_to="wandb",
         run_name=wandb_project,
