@@ -3,28 +3,38 @@ import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-# 1. Đọc cấu hình từ file config.yaml
+# 1. Đọc đường dẫn LoRA từ file config
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
-base_model_id = config["model"]["id"]
-outdir_path = config["model"]["output_dir"] # Thư mục chứa adapter sau khi train
+outdir_path = config["model"]["output_dir"] 
 hf_repo_id = "phgrouptechs/Denglish-8B-Instruct"
 
-print("1. Đang tải Base Model và Tokenizer...")
-tokenizer = AutoTokenizer.from_pretrained(base_model_id)
+# ==========================================
+# BƯỚC QUAN TRỌNG NHẤT: ĐIỀN BASE MODEL 16-BIT
+# ==========================================
+# Nếu lúc train bạn dùng mô hình 4-bit (vd: "unsloth/llama-3-8b-Instruct-bnb-4bit")
+# Thì ở đây bạn BẮT BUỘC phải đổi tên thành bản gốc (chưa nén) của nó.
+# Ví dụ: "meta-llama/Meta-Llama-3-8B-Instruct" hoặc "NousResearch/Meta-Llama-3-8B-Instruct"
+
+base_model_16bit_id = "ĐIỀN_TÊN_MODEL_GỐC_16_BIT_VÀO_ĐÂY" 
+
+print(f"1. Đang tải Bản gốc 16-bit: {base_model_16bit_id}...")
+tokenizer = AutoTokenizer.from_pretrained(base_model_16bit_id)
+
+# Tải bản 16-bit lên CPU để gộp (không bị lỗi 4-bit nữa)
 base_model = AutoModelForCausalLM.from_pretrained(
-    base_model_id,
+    base_model_16bit_id,
     torch_dtype=torch.bfloat16,
     device_map="cpu", 
 )
 
 print(f"2. Đang đọc LoRA từ {outdir_path} và Gộp (Merge)...")
+# Đắp LoRA lên bản 16-bit
 model = PeftModel.from_pretrained(base_model, outdir_path)
 merged_model = model.merge_and_unload()
 
 print(f"3. Đang đẩy mô hình HOÀN CHỈNH lên {hf_repo_id}...")
-# Lệnh này sẽ tạo ra file config.json và các file weights lớn trên Hugging Face
 merged_model.push_to_hub(hf_repo_id)
 tokenizer.push_to_hub(hf_repo_id)
 
