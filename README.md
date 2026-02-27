@@ -30,7 +30,9 @@ Dự án này cung cấp bộ code Python để xây dựng một gia sư AI đa
 Để cài đặt các thư viện cần thiết, bạn có thể sử dụng `pip` với file `requirements.txt`:
 
 ```bash
+nvidia-smi
 pip install -r requirements.txt
+pip install flash-attn --no-build-isolation
 ```
 
 **Lưu ý**: Một số thư viện như `torch` có thể yêu cầu cài đặt cụ thể tùy thuộc vào cấu hình GPU của bạn. Vui lòng tham khảo tài liệu chính thức của PyTorch để biết thêm chi tiết.
