@@ -1,8 +1,11 @@
+import os
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["HF_HOME"] = "/runpod-volume/hf_cache"
+os.environ["TMPDIR"] = "/runpod-volume/"
 import runpod
 import torch
 import base64
 import tempfile
-import os
 import asyncio
 import whisper
 import edge_tts
