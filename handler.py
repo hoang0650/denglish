@@ -7,19 +7,29 @@ import asyncio
 import whisper
 import edge_tts
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel # Bổ sung thư viện Peft để gộp LoRA
 
 print("--- Đang khởi tạo Denglish AI Worker ---")
 
-# 1. Tải Bộ Não (LLM) - Lấy model đã gộp của bạn
-MODEL_ID = "phgrouptechs/Denglish-8B-Instruct"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID,
+# 1. Tải Bộ Não (LLM) - Gộp Base Model và Denglish LoRA
+BASE_MODEL_PATH = "/runpod-volume/llama3-base"
+LORA_MODEL_PATH = "/runpod-volume/denglish-model"
+
+print("Đang nạp Tokenizer...")
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH)
+
+print("Đang nạp Base Model (Llama 3 4-bit)...")
+base_model = AutoModelForCausalLM.from_pretrained(
+    BASE_MODEL_PATH,
     torch_dtype=torch.bfloat16,
     device_map="cuda"
 )
 
-# 2. Tải Đôi Tai (Whisper STT) - Theo cấu hình trong config của bạn là 'small'
+print("Đang gộp 'Não phụ' LoRA Denglish...")
+model = PeftModel.from_pretrained(base_model, LORA_MODEL_PATH)
+
+# 2. Tải Đôi Tai (Whisper STT)
+print("Đang nạp Whisper (small)...")
 stt_model = whisper.load_model("small", device="cuda")
 
 # Hàm tạo giọng nói (Edge TTS)
@@ -70,7 +80,7 @@ def handler(job):
         outputs = model.generate(
             **inputs, 
             max_new_tokens=400, 
-            temperature=0.3, # Để nhiệt độ thấp cho việc sửa lỗi chính xác
+            temperature=0.3, # Giữ nguyên mức 0.3 là cực kỳ hợp lý để AI sửa lỗi chuẩn xác
             pad_token_id=tokenizer.eos_token_id
         )
         
@@ -99,6 +109,11 @@ def handler(job):
         }
 
     except Exception as e:
+        # Dọn rác dự phòng nếu có lỗi xảy ra giữa chừng
+        if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
+            os.remove(temp_audio_path)
+        if 'tts_output_path' in locals() and os.path.exists(tts_output_path):
+            os.remove(tts_output_path)
         return {"error": str(e)}
 
 if __name__ == "__main__":
