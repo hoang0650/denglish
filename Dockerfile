@@ -1,5 +1,5 @@
 # Nâng cấp lên PyTorch 2.8.0 và CUDA 12.8 để hỗ trợ trọn vẹn kiến trúc Blackwell (sm_120) của RTX 5090
-FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
 ENV PYTHONUNBUFFERED=1
 
