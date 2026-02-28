@@ -18,11 +18,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -U pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# --- PHÉP THUẬT NẰM Ở ĐÂY: TẢI TRỰC TIẾP MODEL VÀO TRONG IMAGE ---
-RUN pip install -U "huggingface_hub[cli]"
-RUN huggingface-cli download unsloth/llama-3-8b-Instruct-bnb-4bit
-RUN huggingface-cli download phgrouptechs/Denglish-8B-Instruct
-# Tải luôn Whisper cho vào hộp
+# --- DÙNG THẲNG PYTHON ĐỂ TẢI MODEL TRÁNH LỖI ĐƯỜNG DẪN CLI ---
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('unsloth/llama-3-8b-Instruct-bnb-4bit')"
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('phgrouptechs/Denglish-8B-Instruct')"
 RUN python -c "import whisper; whisper.load_model('small', device='cpu')"
 
 COPY handler.py .
