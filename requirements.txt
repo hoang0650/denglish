@@ -1,3 +1,4 @@
+runpod
 transformers
 datasets
 peft
@@ -5,6 +6,8 @@ trl
 bitsandbytes
 accelerate
 faster-whisper
+openai-whisper
+asyncio
 edge-tts
 huggingface_hub
 pandas
