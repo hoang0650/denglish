@@ -21,6 +21,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -U pip && \
     pip install --no-cache-dir -r requirements.txt
 
+RUN pip uninstall -y hf-transfer
+
 COPY handler.py .
 
 CMD ["python", "-u", "handler.py"]
