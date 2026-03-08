@@ -13,5 +13,6 @@ huggingface_hub
 pandas
 PyYAML
 wandb
+pydub
 Pillow
 pytesseract

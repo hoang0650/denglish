@@ -25,7 +25,7 @@ fi
 
 # 3. Chuẩn bị dữ liệu
 echo "\n--- 3. Chuẩn bị dữ liệu huấn luyện ---" 
-python data_preparation.py
+python data_preparation1.py
 
 # 4. Huấn luyện mô hình
 echo "\n--- 4. Bắt đầu huấn luyện mô hình ---"
