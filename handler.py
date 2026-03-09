@@ -22,7 +22,8 @@ BASE_MODEL_PATH = "/runpod-volume/llama3-base"
 LORA_MODEL_PATH = "/runpod-volume/denglish-model"
 
 # Nạp Model & Tokenizer
-tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH)
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, local_files_only=True)
+
 # Thêm pad_token nếu chưa có để tránh lỗi batching
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
@@ -30,9 +31,10 @@ if tokenizer.pad_token is None:
 base_model = AutoModelForCausalLM.from_pretrained(
     BASE_MODEL_PATH,
     torch_dtype=torch.bfloat16,
-    device_map="auto" # Thay cuda bằng auto để tối ưu phân bổ
+    device_map="auto",
+    local_files_only=True
 )
-model = PeftModel.from_pretrained(base_model, LORA_MODEL_PATH)
+model = PeftModel.from_pretrained(base_model, LORA_MODEL_PATH, local_files_only=True)
 stt_model = whisper.load_model("small", device="cuda")
 
 async def generate_trilingual_audio(full_text, output_path):
