@@ -21,33 +21,32 @@ os.environ["HF_HOME"] = "/tmp/huggingface"
 os.environ["TORCH_HOME"] = "/tmp/torch"
 os.environ["PYTHONHASHSEED"] = "0"
 
-print("--- [Denglish-AI] Đang khởi tạo Siêu Gia Sư Denglish (RTX 5090 Optimized) ---")
+try:
+    BASE_MODEL_PATH = "/runpod-volume/llama3-base"
+    LORA_MODEL_PATH = "/runpod-volume/denglish-model"
 
-# ==========================================
-# 1. CẤU HÌNH & NẠP MÔ HÌNH
-# ==========================================
-BASE_MODEL_PATH = "/runpod-volume/llama3-base" 
-LORA_MODEL_PATH = "/runpod-volume/denglish-model"
+    if not os.path.exists(BASE_MODEL_PATH):
+        raise FileNotFoundError(f"Không thấy Base Model tại {BASE_MODEL_PATH}")
 
-# Nạp Tokenizer
-tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, local_files_only=True)
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, local_files_only=True)
+    
+    # RTX 5090 cần cấu hình này để tối ưu
+    base_model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL_PATH,
+        torch_dtype=torch.bfloat16,
+        device_map="auto", # Hoặc "cuda"
+        local_files_only=True
+    )
+    model = PeftModel.from_pretrained(base_model, LORA_MODEL_PATH, local_files_only=True)
+    stt_model = whisper.load_model("small", device="cuda")
+    
+    print("--- [Denglish-AI] Model loaded successfully! ---")
 
-# Nạp Base Model với bfloat16 (RTX 5090 cực mạnh với định dạng này)
-base_model = AutoModelForCausalLM.from_pretrained(
-    BASE_MODEL_PATH,
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-    local_files_only=True
-)
-
-# Nạp LoRA Adapter
-model = PeftModel.from_pretrained(base_model, LORA_MODEL_PATH, local_files_only=True)
-model.eval()
-
-# Nạp Whisper cho STT (Chạy trên CUDA)
-stt_model = whisper.load_model("small", device="cuda")
+except Exception as e:
+    print(f"❌ LỖI KHỞI TẠO NGHIÊM TRỌNG: {str(e)}")
+    # Giữ worker sống để bạn kịp đọc Log thay vì báo Unhealthy rồi tắt
+    import time
+    time.sleep(600)
 
 # ==========================================
 # 2. MODULE XỬ LÝ ÂM THANH TAM NGỮ
