@@ -17,6 +17,35 @@ def prepare_datasets():
     all_datasets = []
 
     # ==========================================
+    # 0. CÁC DATASET CŨ CỦA BẠN (Alpaca, German, VN Mix)
+    # ==========================================
+    try:
+        alpaca = load_dataset("yahma/alpaca-cleaned", split="train").select(range(10000))
+        all_datasets.append(alpaca)
+        print("✅ Loaded Alpaca Cleaned")
+    except Exception as e: print(f"⚠️ Error Alpaca: {e}")
+
+    try:
+        german = load_dataset("philschmid/translated_tasks_de_google_52k", split="train").select(range(10000))
+        all_datasets.append(german)
+        print("✅ Loaded German Tasks")
+    except Exception as e: print(f"⚠️ Error German: {e}")
+
+    try:
+        json_path = os.path.abspath("vn_mix_data.json")
+        with open(json_path, "r", encoding="utf-8") as f:
+            vn_mix_data = json.load(f)
+        vn_ds = Dataset.from_list(vn_mix_data)
+        all_datasets.append(vn_ds)
+        print(f"Loaded Vietnamese Mix Data: {len(vn_ds)} samples")
+    except FileNotFoundError:
+        print("Warning: vn_mix_data.json not found. Skipping Vietnamese mix data.")
+        vn_ds = Dataset.from_list([]) 
+    except json.JSONDecodeError:
+        print("Error: vn_mix_data.json is invalid JSON. Skipping.")
+        vn_ds = Dataset.from_list([])
+
+    # ==========================================
     # 1. VIETNAMESE INSTRUCTION (Trò chuyện tự nhiên)
     # ==========================================
     try:
