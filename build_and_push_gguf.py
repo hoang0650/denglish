@@ -22,6 +22,10 @@ def main():
     if not os.path.exists("llama.cpp"):
         run_command("git clone https://github.com/ggerganov/llama.cpp")
     
+    # FIX LỖI: Cập nhật bắt buộc các thư viện xử lý token cho Llama 3
+    print("\n[Denglish-AI] Cập nhật thư viện để fix lỗi TokenizersBackend và BpeVocab...")
+    run_command("pip install --upgrade transformers tokenizers tiktoken sentencepiece")
+    
     if not os.path.exists("llama.cpp/build"):
         run_command("cd llama.cpp && pip install -r requirements.txt && cmake -B build && cmake --build build --config Release")
     else:
