@@ -20,19 +20,31 @@ def prepare_datasets():
     # 1. VIETNAMESE INSTRUCTION (Trò chuyện tự nhiên)
     # ==========================================
     try:
-        # Cấu trúc ShareGPT cần bóc tách
-        vi_sharegpt = load_dataset("5CD-AI/Vietnamese-OpenGVLab-ShareGPT-4o-gg-translated", split="train")
+        vi_sharegpt = load_dataset(
+            "5CD-AI/Vietnamese-OpenGVLab-ShareGPT-4o-gg-translated", 
+            "image_caption", 
+            split="images"
+        )
+        
         vi_data = []
-        for row in vi_sharegpt.select(range(min(59000, len(vi_sharegpt)))):
-            convs = row.get("conversations", [])
+        
+        # Lấy min để tránh lỗi out of range
+        limit = min(59000, len(vi_sharegpt))
+        
+        for row in vi_sharegpt.select(range(limit)):
+            # 2. Đổi tên cột cần lấy thành "conversations_vi"
+            convs = row.get("conversations_vi", [])
+            
             if len(convs) >= 2:
                 vi_data.append(standardize_format(
                     instruction="Trả lời bằng tiếng Việt một cách tự nhiên và mượt mà.",
                     input_text=convs[0].get("value", ""),
                     output_text=convs[1].get("value", "")
                 ))
+                
         all_datasets.append(Dataset.from_list(vi_data))
         print(f"✅ Loaded Vietnamese Instruction: {len(vi_data)} samples")
+    
     except Exception as e: print(f"⚠️ Error Vietnamese Instruction: {e}")
 
     # ==========================================
