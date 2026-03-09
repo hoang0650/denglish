@@ -135,6 +135,24 @@ Sau đó, bạn có thể chạy script:
 
 **Lưu ý quan trọng**: Đảm bảo rằng các biến môi trường `HF_TOKEN` và `WANDB_API_KEY` đã được thiết lập trong môi trường shell của bạn trước khi chạy script này để quá trình upload và theo dõi WandB diễn ra thành công.
 
+## 6. Giải pháp cho vấn đề Network Volume
+**Để tránh bị lỗi** `"Disk Full"` (khiến worker không thể ghi file tạm), bạn nên thực hiện các bước sau:
+
+1. **Dọn dẹp rác HuggingFace**: Trong terminal của RunPod, hãy chạy lệnh: `rm -rf /root/.cache/huggingface/*` (Đây thường là nơi chứa các bản tải xuống trùng lặp).
+
+2. **Kiểm tra file dư thừa**: Chạy lệnh `du -sh /runpod-volume/* | sort -h` để xem thư mục nào đang chiếm nhiều dung lượng nhất. Có khả năng bạn đang có các file checkpoint cũ hoặc file .bin không cần thiết.
+
+3. **Cấu hình hệ thống**: Trong file `handler.py`, hãy thêm 3 dòng `os.environ` sau khi import các thư viện khác:
+
+```python
+import os
+os.environ["HF_HOME"] = "/tmp"
+os.environ["WANDB_CACHE_DIR"] = "/tmp"
+os.environ["WANDB_DIR"] = "/tmp"
+```
+
+Tại sao bản code này giúp ích? Bằng cách thêm 3 dòng os.environ ở đầu code, từ nay về sau, khi bạn chạy worker, các file phát sinh sẽ được lưu vào /tmp (bộ nhớ tạm của container). Khi container tắt, rác này tự mất đi, không làm đầy cái Volume 140GB quý giá của bạn nữa.
+
 ## 6. Điểm nổi bật của dự án
 
 -   **Học tập đa ngôn ngữ**: Mô hình được thiết kế để hỗ trợ người dùng học cả tiếng Anh và tiếng Đức một cách hiệu quả.
