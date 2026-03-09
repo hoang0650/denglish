@@ -15,49 +15,56 @@ from pydub import AudioSegment
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-print("--- Đang khởi tạo Siêu Gia Sư Denglish AGI (Vi-En-De) ---")
+print("--- Đang khởi tạo Siêu Gia Sư Denglish (Vi-En-De) ---")
 
-# ==========================================
-# 1. NẠP MÔ HÌNH (Sử dụng dung lượng Network Volume)
-# ==========================================
+# Cấu hình đường dẫn
 BASE_MODEL_PATH = "/runpod-volume/llama3-base" 
 LORA_MODEL_PATH = "/runpod-volume/denglish-model"
 
+# Nạp Model & Tokenizer
 tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH)
+# Thêm pad_token nếu chưa có để tránh lỗi batching
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
 base_model = AutoModelForCausalLM.from_pretrained(
     BASE_MODEL_PATH,
     torch_dtype=torch.bfloat16,
-    device_map="cuda"
+    device_map="auto" # Thay cuda bằng auto để tối ưu phân bổ
 )
 model = PeftModel.from_pretrained(base_model, LORA_MODEL_PATH)
 stt_model = whisper.load_model("small", device="cuda")
 
-# ==========================================
-# 2. MODULE XỬ LÝ ÂM THANH TAM NGỮ
-# ==========================================
 async def generate_trilingual_audio(full_text, output_path):
     """Tách văn bản và ghép giọng chuẩn theo từng ngôn ngữ"""
-    # Tách các dòng văn bản để nhận diện ngôn ngữ
     lines = [line.strip() for line in full_text.split('\n') if line.strip()]
     combined = AudioSegment.empty()
     silence = AudioSegment.silent(duration=400)
 
     for line in lines:
-        # Chọn giọng đọc dựa trên từ khóa trong dòng
-        if any(k in line.upper() for k in ["ENGLISH:", "TIẾNG ANH:", "ANH NGỮ:"]):
+        # Nhận diện giọng đọc thông minh hơn qua prefix
+        upper_line = line.upper()
+        if any(k in upper_line for k in ["ENGLISH:", "TIẾNG ANH:", "ANH NGỮ:"]):
             voice = "en-US-EmmaNeural"
-        elif any(k in line.upper() for k in ["GERMAN:", "TIẾNG ĐỨC:", "DEUTSCH:"]):
+            clean_text = re.sub(r'^.*?:', '', line).strip()
+        elif any(k in upper_line for k in ["GERMAN:", "TIẾNG ĐỨC:", "DEUTSCH:"]):
             voice = "de-DE-KatjaNeural"
+            clean_text = re.sub(r'^.*?:', '', line).strip()
         else:
-            voice = "vi-VN-HoaiMyNeural" # Mặc định là tiếng Việt giải thích
+            voice = "vi-VN-HoaiMyNeural"
+            clean_text = line
 
-        temp_p = tempfile.mktemp(suffix=".mp3")
-        communicate = edge_tts.Communicate(line, voice)
-        await communicate.save(temp_p)
+        # Tạo file tạm an toàn
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            temp_p = tmp.name
         
-        segment = AudioSegment.from_mp3(temp_p)
-        combined += segment + silence
-        if os.path.exists(temp_p): os.remove(temp_p)
+        try:
+            communicate = edge_tts.Communicate(clean_text, voice)
+            await communicate.save(temp_p)
+            segment = AudioSegment.from_mp3(temp_p)
+            combined += segment + silence
+        finally:
+            if os.path.exists(temp_p): os.remove(temp_p)
 
     combined.export(output_path, format="mp3")
 
@@ -212,7 +219,7 @@ def handler(job):
         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
 
-        outputs = model.generate(**inputs, max_new_tokens=10000, temperature=0.7, pad_token_id=tokenizer.eos_token_id)
+        outputs = model.generate(**inputs, max_new_tokens=512, temperature=0.4, pad_token_id=tokenizer.eos_token_id)
         ai_response = tokenizer.batch_decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True)[0].strip()
 
         # BƯỚC 3: TẠO ÂM THANH TAM NGỮ (Threading + pydub)
@@ -245,6 +252,7 @@ def handler(job):
     except Exception as e:
         return {"error": f"Lỗi hệ thống: {str(e)}"}
     finally:
+        torch.cuda.empty_cache()
         for f in temp_files:
             if os.path.exists(f): os.remove(f)
 
