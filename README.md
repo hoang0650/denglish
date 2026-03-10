@@ -136,22 +136,39 @@ Sau đó, bạn có thể chạy script:
 **Lưu ý quan trọng**: Đảm bảo rằng các biến môi trường `HF_TOKEN` và `WANDB_API_KEY` đã được thiết lập trong môi trường shell của bạn trước khi chạy script này để quá trình upload và theo dõi WandB diễn ra thành công.
 
 ## 6. Giải pháp cho vấn đề Network Volume
-**Để tránh bị lỗi** `"Disk Full"` (khiến worker không thể ghi file tạm), bạn nên thực hiện các bước sau:
+`python3 -m pip install -U huggingface_hub"`
 
-1. **Dọn dẹp rác HuggingFace**: Trong terminal của RunPod, hãy chạy lệnh: `rm -rf /root/.cache/huggingface/*` (Đây thường là nơi chứa các bản tải xuống trùng lặp).
-
-2. **Kiểm tra file dư thừa**: Chạy lệnh `du -sh /runpod-volume/* | sort -h` để xem thư mục nào đang chiếm nhiều dung lượng nhất. Có khả năng bạn đang có các file checkpoint cũ hoặc file .bin không cần thiết.
-
-3. **Cấu hình hệ thống**: Trong file `handler.py`, hãy thêm 3 dòng `os.environ` sau khi import các thư viện khác:
+Sau đó chạy lệnh bên dưới vào terminal của RunPod:
 
 ```python
+python3 -c "
+from huggingface_hub import snapshot_download
 import os
-os.environ["HF_HOME"] = "/tmp"
-os.environ["WANDB_CACHE_DIR"] = "/tmp"
-os.environ["WANDB_DIR"] = "/tmp"
-```
 
-Tại sao bản code này giúp ích? Bằng cách thêm 3 dòng os.environ ở đầu code, từ nay về sau, khi bạn chạy worker, các file phát sinh sẽ được lưu vào /tmp (bộ nhớ tạm của container). Khi container tắt, rác này tự mất đi, không làm đầy cái Volume 140GB quý giá của bạn nữa.
+# THAY TOKEN CỦA BẠN VÀO ĐÂY
+os.environ['HF_TOKEN'] = 'TOKEN_CỦA_BẠN_Ở_ĐÂY'
+
+# Tải Base Model về /workspace (nơi có Network Volume 140GB)
+print('🚀 Đang tải Base Model với Token xác thực...')
+snapshot_download(
+    repo_id='unsloth/llama-3-8b-Instruct-bnb-4bit',
+    local_dir='/workspace/llama3-base',
+    local_dir_use_symlinks=False,
+    token=os.environ['HF_TOKEN']
+)
+
+# Tải LoRA Model
+print('🚀 Đang tải LoRA Model...')
+snapshot_download(
+    repo_id='phgrouptechs/Denglish-8B-Instruct',
+    local_dir='/workspace/denglish-model',
+    local_dir_use_symlinks=False,
+    token=os.environ['HF_TOKEN']
+)
+print('✅ Hoàn thành! Kiểm tra file config.json tại /workspace/llama3-base')
+"
+```
+Kiểm tra lại xem đã mount vô ổ đĩa hay chưa bằng lệnh `ls -lh /workspace/llama3-base/config.json`. Nếu thấy `-rw-rw-rw- 1 root root 1.3K Mar 10 02:36 /workspace/llama3-base/config.json`, thì đã mount thành công. 
 
 ## 6. Điểm nổi bật của dự án
 
