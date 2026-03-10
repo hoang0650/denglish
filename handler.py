@@ -168,7 +168,7 @@ def handler(job):
 
         else: # Mặc định là Chat/Luyện nói
             system_prompt = (
-                f"Bạn là Denglish AI - AI chuyên luyện nói Face-to-Face {lang_target} cho học viên người Việt Nam với chủ đề {topic} theo cấp độ {target_level}.\n"
+                f"Bạn là Denglish AI - AI chuyên luyện nói Face-to-Face {target_lang_key} cho học viên người Việt Nam với chủ đề {topic} theo cấp độ {target_level}.\n"
                 f"Người dùng vừa NÓI: '{user_text}'.\n"
                 "NHIỆM VỤ CỦA BẠN:\n"
                 "1. PHẢN HỒI REAL-TIME: Trả lời ngắn gọn, tự nhiên như đang nói chuyện trực tiếp.\n"
