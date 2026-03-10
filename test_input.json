@@ -1,0 +1,10 @@
+{
+    "input": {
+        "text": "Hello, I want to practice my English speaking skills today.",
+        "lang": "en",
+        "action": "chat",
+        "level": "B1",
+        "topic": "Travel and Food",
+        "username": "Hoàng"
+    }
+}
