@@ -17,8 +17,8 @@ from peft import PeftModel
 
 
 try:
-    BASE_MODEL_PATH = "/runpod-volume/llama3-base"
-    LORA_MODEL_PATH = "/runpod-volume/denglish-model"
+    BASE_MODEL_PATH = "/workspace/llama3-base"
+    LORA_MODEL_PATH = "/workspace/denglish-model"
 
     if not os.path.exists(BASE_MODEL_PATH):
         raise FileNotFoundError(f"Không thấy Base Model tại {BASE_MODEL_PATH}")
