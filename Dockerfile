@@ -5,5 +5,5 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -U pip && pip install --no-cache-dir -r requirements.txt
 COPY handler.py .
-RUN mkdir -p /workspace/llama3-base /workspace/denglish-model
+RUN mkdir -p /runpod-volume/llama3-base /runpod-volume/denglish-model
 CMD ["python", "-u", "handler.py"]
