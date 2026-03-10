@@ -15,15 +15,10 @@ from pydub import AudioSegment
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-# --- [QUAN TRỌNG] CHỐNG TRÀN NETWORK VOLUME ---
-# Ép cache của HuggingFace và Torch vào RAM disk (/tmp) thay vì lưu vào Volume 140GB
-os.environ["HF_HOME"] = "/tmp/huggingface"
-os.environ["TORCH_HOME"] = "/tmp/torch"
-os.environ["PYTHONHASHSEED"] = "0"
 
 try:
-    BASE_MODEL_PATH = "/runpod-volume/llama3-base"
-    LORA_MODEL_PATH = "/runpod-volume/denglish-model"
+    BASE_MODEL_PATH = "/workspace/llama3-base"
+    LORA_MODEL_PATH = "/workspace/denglish-model"
 
     if not os.path.exists(BASE_MODEL_PATH):
         raise FileNotFoundError(f"Không thấy Base Model tại {BASE_MODEL_PATH}")
