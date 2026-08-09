@@ -82,6 +82,47 @@ async def generate_trilingual_audio(full_text, output_path):
     combined.export(output_path, format="mp3")
 
 # ==========================================
+# 2b. MEMORY DELTA HELPERS (agent_turn)
+# ==========================================
+def _strip_memory_delta(text: str) -> str:
+    return re.sub(
+        r"MEMORY_DELTA\s*[:=]?\s*\{.*\}\s*$",
+        "",
+        text or "",
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+
+
+def _extract_memory_delta(ai_response: str, user_text: str) -> dict:
+    import json
+
+    m = re.search(r"MEMORY_DELTA\s*[:=]?\s*(\{.*\})\s*$", ai_response or "", re.DOTALL | re.IGNORECASE)
+    if m:
+        try:
+            parsed = json.loads(m.group(1))
+            if isinstance(parsed, dict):
+                return {
+                    "facts": parsed.get("facts") or [],
+                    "preferences": parsed.get("preferences") or [],
+                    "habits": parsed.get("habits") or [],
+                    "entities": parsed.get("entities") or [],
+                }
+        except Exception:
+            pass
+    # Fallback heuristic extraction (still ephemeral — API persists)
+    lower = (user_text or "").lower()
+    delta = {"facts": [], "preferences": [], "habits": [], "entities": []}
+    if user_text:
+        delta["facts"].append({"text": f"User said: {user_text[:220]}", "importance": 0.45})
+    if "prefer" in lower or "thích" in lower:
+        delta["preferences"].append({"key": "stated_preference", "value": user_text[:160]})
+    if any(k in lower for k in ("code", "python", "nestjs", "angular", "typescript")):
+        delta["habits"].append({"action": "asks_for_code", "context": "engineering"})
+        delta["entities"].append({"name": "Engineering", "type": "Topic", "rel": "OFTEN_ASKS"})
+    return delta
+
+
+# ==========================================
 # 3. WORKER HANDLER CHÍNH
 # ==========================================
 def handler(job):
@@ -97,6 +138,7 @@ def handler(job):
     test_context = job_input.get("test_context", "")
     username = job_input.get("username", "Học viên")
     topic = job_input.get("topic", "General Conversation")
+    memory_context = job_input.get("memory_context") or ""
     
     user_text = ""
     input_source = ""
@@ -166,6 +208,21 @@ def handler(job):
             )
             user_msg = "Chấm điểm bài làm cho tôi."
 
+        elif action == "agent_turn":
+            system_prompt = (
+                "You are a marketplace hire-agent running on RunPod. "
+                "Use the persistent memory pack to personalize replies and infer user habits.\n"
+                "Do not invent memories that are not supported.\n\n"
+                f"{memory_context}\n\n"
+                "After your normal reply, append ONE line exactly in this form:\n"
+                'MEMORY_DELTA: {"facts":[{"text":"...","importance":0.7}],'
+                '"preferences":[{"key":"tone","value":"concise"}],'
+                '"habits":[{"action":"asks_for_code","context":"python"}],'
+                '"entities":[{"name":"NestJS","type":"Topic","rel":"OFTEN_ASKS"}]}\n'
+                "Use empty arrays when nothing new was learned."
+            )
+            user_msg = user_text if user_text else "Hello"
+
         else: # Mặc định là Chat/Luyện nói
             system_prompt = (
                 f"Bạn là Denglish AI - AI chuyên luyện nói Face-to-Face {target_lang_key} cho học viên người Việt Nam với chủ đề {topic} theo cấp độ {target_level}.\n"
@@ -190,6 +247,8 @@ def handler(job):
         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
 
+        input_tokens = int(inputs.input_ids.shape[-1])
+
         # Sinh văn bản (Sử dụng RTX 5090 cực nhanh)
         with torch.no_grad():
             outputs = model.generate(
@@ -199,32 +258,66 @@ def handler(job):
                 top_p=0.9,
                 pad_token_id=tokenizer.eos_token_id
             )
-        
-        ai_response = tokenizer.decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True).strip()
 
-        # --- BƯỚC 3: TẠO ÂM THANH ---
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_out:
-            final_audio_path = tmp_out.name
-            temp_files.append(final_audio_path)
+        generated_ids = outputs[0][len(inputs.input_ids[0]):]
+        output_tokens = int(generated_ids.shape[-1])
+        ai_response = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-        def run_tts():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(generate_trilingual_audio(ai_response, final_audio_path))
-            loop.close()
+        memory_delta = None
+        visible_text = ai_response
+        if action == "agent_turn":
+            memory_delta = _extract_memory_delta(ai_response, user_text)
+            visible_text = _strip_memory_delta(ai_response)
 
-        tts_thread = threading.Thread(target=run_tts)
-        tts_thread.start()
-        tts_thread.join()
+        audio_base64_out = None
+        # Agent turns skip TTS — marketplace chat is text-first.
+        if action != "agent_turn":
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_out:
+                final_audio_path = tmp_out.name
+                temp_files.append(final_audio_path)
 
-        with open(final_audio_path, "rb") as f:
-            audio_base64_out = base64.b64encode(f.read()).decode('utf-8')
+            def run_tts():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(generate_trilingual_audio(visible_text, final_audio_path))
+                loop.close()
 
+            tts_thread = threading.Thread(target=run_tts)
+            tts_thread.start()
+            tts_thread.join()
+
+            with open(final_audio_path, "rb") as f:
+                audio_base64_out = base64.b64encode(f.read()).decode('utf-8')
+
+        usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "unit": "tokens",
+        }
+        output = {
+            "input_detected": user_text,
+            "ai_response_text": visible_text,
+            "ai_response_audio": audio_base64_out,
+            "text": visible_text,
+        }
+        if memory_delta is not None:
+            output["memory_delta"] = memory_delta
+        # Flat keys kept for Telegram/legacy clients; nested output for marketplace router.
         return {
             "status": "success",
             "input_detected": user_text,
-            "ai_response_text": ai_response,
-            "ai_response_audio": audio_base64_out
+            "ai_response_text": visible_text,
+            "ai_response_audio": audio_base64_out,
+            "output": output,
+            "memory_delta": memory_delta,
+            "usage": usage,
+            "meta": {
+                "model": "denglish-lora",
+                "provider": "runpod_serverless",
+                "input_source": input_source,
+                "action": action,
+            },
         }
 
     except Exception as e:
