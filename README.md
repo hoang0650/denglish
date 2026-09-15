@@ -12,9 +12,16 @@ aimarkets.vn → api.aimarkets.vn → ai.aimarkets.vn
 ## Host on RunPod
 
 1. Build/push the Docker image (`Dockerfile` → `python -u handler.py`).
-2. Network volume with base model at `/runpod-volume/llama3-base` and LoRA at `/runpod-volume/denglish-model` (or `/workspace/...`).
-3. Create a **Serverless endpoint**, attach this image + GPU + volume. Copy the endpoint id.
-4. On **ai.aimarkets.vn** set `RUNPOD_API_KEY` and `RUNPOD_ENDPOINT_ID` (that id). Do not put the key in the web/app.
+2. Network volume layout (download once, every serverless worker reuses):
+   - `/runpod-volume/llama3-base` — base LLM
+   - `/runpod-volume/denglish-model` — LoRA
+   - `/runpod-volume/vieneu-tts-v3-turbo` — `pnnbao-ump/VieNeu-TTS-v3-Turbo`
+   - `/runpod-volume/huggingface` — HF hub cache
+3. Bootstrap TTS onto the volume (pod shell or one-shot):
+   `python voice_assistant.py --ensure-tts`
+   Serverless `handler.py` also calls `ensure_model` on boot (`VIENEU_DOWNLOAD=0` to skip).
+4. Create a **Serverless endpoint**, attach this image + GPU + volume. Copy the endpoint id.
+5. On **ai.aimarkets.vn** set `RUNPOD_API_KEY` and `RUNPOD_ENDPOINT_ID` (that id). Do not put the key in the web/app.
 
 Job input (also `prompt` / OpenAI `messages` — the API maps them to `text` before calling you):
 

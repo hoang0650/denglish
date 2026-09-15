@@ -19,8 +19,119 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 MODEL_ID = os.environ.get("VIENEU_MODEL", "pnnbao-ump/VieNeu-TTS-v3-Turbo")
 DEFAULT_VOICE = os.environ.get("VIENEU_DEFAULT_VOICE", "Adam")
 SAMPLE_RATE = 48000
+READY_MARKER = ".vieneu_ready"
 
-# Authoritative 20 presets (SDK v3.3.0). `id` is a URL-safe alias; `name` is what Vieneu.infer(voice=) expects.
+# Same pattern as handler BASE_CANDIDATES / LORA_CANDIDATES — network volume first.
+TTS_CANDIDATES = [
+    os.environ.get("VIENEU_MODEL_DIR", "").strip(),
+    "/runpod-volume/vieneu-tts-v3-turbo",
+    "/workspace/vieneu-tts-v3-turbo",
+    os.path.join(os.getcwd(), "models", "vieneu-tts-v3-turbo"),
+]
+
+
+def configure_hf_cache() -> str:
+    """Point Hugging Face caches at the RunPod network volume when present."""
+    for root in ("/runpod-volume", "/workspace"):
+        if os.path.isdir(root):
+            hf = os.path.join(root, "huggingface")
+            os.makedirs(hf, exist_ok=True)
+            os.environ.setdefault("HF_HOME", hf)
+            os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.path.join(hf, "hub"))
+            os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(hf, "transformers"))
+            os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+            return hf
+    return ""
+
+
+def tts_model_candidates(extra: Optional[list[str]] = None) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for path in list(extra or []) + TTS_CANDIDATES:
+        p = str(path or "").strip()
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
+def preferred_tts_dir(extra: Optional[list[str]] = None) -> str:
+    for path in tts_model_candidates(extra):
+        parent = os.path.dirname(path) or "."
+        if os.path.isdir(path):
+            return path
+        if os.path.isdir(parent) and os.access(parent, os.W_OK):
+            return path
+    return "/runpod-volume/vieneu-tts-v3-turbo"
+
+
+def _looks_like_tts_model(path: str) -> bool:
+    if not path or not os.path.isdir(path):
+        return False
+    if os.path.isfile(os.path.join(path, READY_MARKER)):
+        return True
+    names = set(os.listdir(path))
+    markers = (
+        "config.json",
+        "model.onnx",
+        "model.onnx.data",
+        "tokenizer.json",
+        "preprocessor_config.json",
+    )
+    if any(m in names for m in markers):
+        return True
+    return any(n.endswith((".safetensors", ".onnx", ".bin", ".pt")) for n in names)
+
+
+def resolve_local_model_dir(extra: Optional[list[str]] = None) -> str:
+    for path in tts_model_candidates(extra):
+        if _looks_like_tts_model(path):
+            return path
+    return ""
+
+
+def ensure_model(
+    *,
+    repo_id: str = "",
+    download: bool = True,
+    extra_candidates: Optional[list[str]] = None,
+) -> str:
+    """Return local TTS dir; download from Hugging Face onto the volume if missing."""
+    configure_hf_cache()
+    repo = str(repo_id or MODEL_ID).strip() or MODEL_ID
+    existing = resolve_local_model_dir(extra_candidates)
+    if existing:
+        print(f"[vieneu] using cached model dir={existing}")
+        return existing
+    if not download:
+        raise FileNotFoundError(
+            "VieNeu model not found on volume. Mount /runpod-volume/vieneu-tts-v3-turbo "
+            "or set VIENEU_MODEL_DIR / run voice_assistant --ensure-tts."
+        )
+    target = preferred_tts_dir(extra_candidates)
+    os.makedirs(target, exist_ok=True)
+    print(f"[vieneu] downloading {repo} → {target}")
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise RuntimeError("huggingface_hub is required to cache VieNeu on the volume") from exc
+    snapshot_download(
+        repo_id=repo,
+        local_dir=target,
+        resume_download=True,
+    )
+    marker = os.path.join(target, READY_MARKER)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(f"{repo}\n")
+    print(f"[vieneu] cached model ready dir={target}")
+    return target
+
+
+_engine = None
+_engine_error: Optional[str] = None
+_engine_dir: str = ""
+
 PRESET_VOICES: list[dict[str, str]] = [
     {"id": "adam", "name": "Adam", "region": "Nam", "character": "Natural", "gender": "male"},
     {"id": "pham-tuyen", "name": "Phạm Tuyên", "region": "Bắc", "character": "Natural", "gender": "male"},
@@ -70,26 +181,44 @@ def resolve_voice(name: Optional[str], lang: str = "") -> str:
     return raw
 
 
+def _build_engine(model_ref: str):
+    from vieneu import Vieneu
+
+    try:
+        return Vieneu(backbone_repo=model_ref)
+    except TypeError:
+        try:
+            return Vieneu(mode="v3turbo", backbone_repo=model_ref)
+        except TypeError:
+            try:
+                return Vieneu(mode="v3turbo")
+            except TypeError:
+                return Vieneu()
+
+
 def _get_engine():
-    global _engine, _engine_error
+    global _engine, _engine_error, _engine_dir
     if _engine is not None:
         return _engine
     if _engine_error:
         raise RuntimeError(_engine_error)
     try:
-        from vieneu import Vieneu
+        from vieneu import Vieneu  # noqa: F401
     except ImportError as exc:
         _engine_error = "vieneu is not installed. pip install 'vieneu>=3.3.0'"
         raise RuntimeError(_engine_error) from exc
     try:
+        configure_hf_cache()
+        local = ""
         try:
-            _engine = Vieneu(backbone_repo=MODEL_ID)
-        except TypeError:
-            try:
-                _engine = Vieneu(mode="v3turbo")
-            except TypeError:
-                _engine = Vieneu()
-        print(f"[vieneu] ready model={MODEL_ID} default_voice={DEFAULT_VOICE}")
+            local = ensure_model(repo_id=MODEL_ID, download=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[vieneu] volume ensure failed ({exc}); falling back to hub id={MODEL_ID}")
+            local = resolve_local_model_dir()
+        model_ref = local or MODEL_ID
+        _engine = _build_engine(model_ref)
+        _engine_dir = local or MODEL_ID
+        print(f"[vieneu] ready model={_engine_dir} default_voice={DEFAULT_VOICE}")
         return _engine
     except Exception as exc:  # noqa: BLE001
         _engine_error = str(exc)
@@ -247,6 +376,6 @@ def synthesize(
         "sample_rate": SAMPLE_RATE,
         "voice": voice_name if not cloned else "cloned",
         "cloned": cloned,
-        "model": MODEL_ID,
+        "model": _engine_dir or MODEL_ID,
         "status": "success",
     }

@@ -5,7 +5,7 @@ AI Markets AI (`denglish-api` / ai.aimarkets.vn) calls it with:
 
     POST https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync
     Authorization: Bearer {RUNPOD_API_KEY}
-    {"input": {"text"|"prompt"|"messages": ..., "action": "chat"|"agent_turn"|"tts"|"list_voices"|...}}
+    {"input": {"text"|"prompt"|"messages": ..., "action": "chat"|"agent_turn"|"tts"|"stt"|"list_voices"|...}}
 
 RunPod wraps this handler's return value as `output` on the job.
 """
@@ -25,11 +25,7 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import tts_vieneu as vieneu_tts
-
-try:
-    import whisper
-except ImportError:  # optional on CPU-only debug images
-    whisper = None
+import stt_phowhisper as phowhisper
 
 try:
     import pytesseract
@@ -38,6 +34,7 @@ except ImportError:
 
 
 TTS_ACTIONS = {"tts", "voice_clone", "clone", "list_voices", "voices"}
+STT_ACTIONS = {"stt", "transcribe", "asr"}
 MODEL = os.environ.get("DENGLISH_MODEL_ID", "denglish-lora")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -51,11 +48,23 @@ LORA_CANDIDATES = [
     "/runpod-volume/denglish-model",
     "/workspace/denglish-model",
 ]
+# VieNeu-TTS-v3-Turbo — same network volume layout as llama / LoRA.
+TTS_CANDIDATES = [
+    os.environ.get("VIENEU_MODEL_DIR", "").strip(),
+    "/runpod-volume/vieneu-tts-v3-turbo",
+    "/workspace/vieneu-tts-v3-turbo",
+]
+STT_CANDIDATES = [
+    os.environ.get("PHOWHISPER_MODEL_DIR", "").strip(),
+    "/runpod-volume/phowhisper-large",
+    "/workspace/phowhisper-large",
+]
 
 tokenizer = None
 model = None
-stt_model = None
 LOAD_ERROR = None
+TTS_CACHE_DIR = ""
+STT_CACHE_DIR = ""
 
 
 def _first_dir(candidates):
@@ -66,7 +75,7 @@ def _first_dir(candidates):
 
 
 def _load_models():
-    global tokenizer, model, stt_model, LOAD_ERROR
+    global tokenizer, model, LOAD_ERROR
     base = _first_dir(BASE_CANDIDATES)
     lora = _first_dir(LORA_CANDIDATES)
     if not base:
@@ -89,8 +98,6 @@ def _load_models():
     if DEVICE == "cpu":
         model_local = model_local.to("cpu")
     model = model_local
-    if whisper is not None and DEVICE == "cuda":
-        stt_model = whisper.load_model("small", device="cuda")
     print(f"[denglish-worker] loaded base={base} lora={lora or 'none'} device={DEVICE}")
 
 
@@ -99,6 +106,41 @@ try:
 except Exception as exc:  # noqa: BLE001
     LOAD_ERROR = str(exc)
     print(f"[denglish-worker] load failed: {LOAD_ERROR}")
+
+# Prefetch / reuse VieNeu on the network volume so cold starts skip Hub re-download.
+try:
+    vieneu_tts.configure_hf_cache()
+    TTS_CACHE_DIR = vieneu_tts.ensure_model(
+        repo_id=vieneu_tts.MODEL_ID,
+        download=os.environ.get("VIENEU_DOWNLOAD", "1") != "0",
+        extra_candidates=TTS_CANDIDATES,
+    )
+    print(
+        f"[denglish-worker] tts_vieneu ready model={vieneu_tts.MODEL_ID} "
+        f"cache={TTS_CACHE_DIR} voices={len(vieneu_tts.PRESET_VOICES)}"
+    )
+except Exception as exc:  # noqa: BLE001
+    print(f"[denglish-worker] tts ensure deferred: {exc}")
+    print(
+        f"[denglish-worker] tts_vieneu lazy model={vieneu_tts.MODEL_ID} "
+        f"voices={len(vieneu_tts.PRESET_VOICES)}"
+    )
+
+# Prefetch / reuse PhoWhisper-large on the same network volume.
+try:
+    phowhisper.configure_hf_cache()
+    STT_CACHE_DIR = phowhisper.ensure_model(
+        repo_id=phowhisper.MODEL_ID,
+        download=os.environ.get("PHOWHISPER_DOWNLOAD", "1") != "0",
+        extra_candidates=STT_CANDIDATES,
+    )
+    print(
+        f"[denglish-worker] stt_phowhisper ready model={phowhisper.MODEL_ID} "
+        f"cache={STT_CACHE_DIR}"
+    )
+except Exception as exc:  # noqa: BLE001
+    print(f"[denglish-worker] stt ensure deferred: {exc}")
+    print(f"[denglish-worker] stt_phowhisper lazy model={phowhisper.MODEL_ID}")
 
 
 def _text_from_messages(messages) -> str:
@@ -139,7 +181,7 @@ def _normalize_input(job: dict) -> dict:
 
 
 def _wants_tts(inp: dict, action: str) -> bool:
-    if action == "agent_turn":
+    if action == "agent_turn" or action in STT_ACTIONS:
         return False
     if action in TTS_ACTIONS:
         return action not in {"list_voices", "voices"}
@@ -155,6 +197,31 @@ def _materialize_ref(inp: dict, action: str, temp_files: list) -> str:
     b64 = inp.get("ref_audio_base64")
     if action in {"tts", "voice_clone", "clone"}:
         b64 = b64 or inp.get("audio_base64")
+    path = ""
+    if url.startswith("http://") or url.startswith("https://"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            path = tmp.name
+        vieneu_tts.download_ref(url, path)
+        temp_files.append(path)
+        return path
+    if b64:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            path = tmp.name
+        vieneu_tts.write_ref_bytes(vieneu_tts.decode_audio_b64(str(b64)), path)
+        temp_files.append(path)
+        return path
+    return path
+
+
+def _materialize_stt_audio(inp: dict, temp_files: list) -> str:
+    """Buyer speech for PhoWhisper — never the seller clone ref_audio."""
+    url = str(
+        inp.get("stt_audio_url")
+        or inp.get("speech_url")
+        or inp.get("audio_url")
+        or ""
+    ).strip()
+    b64 = inp.get("audio_base64") or inp.get("audio") or inp.get("speech_base64")
     path = ""
     if url.startswith("http://") or url.startswith("https://"):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -229,6 +296,9 @@ def _health_payload():
         "loaded": LOAD_ERROR is None,
         "error": LOAD_ERROR,
         "tts_model": vieneu_tts.MODEL_ID,
+        "tts_cache": TTS_CACHE_DIR or vieneu_tts.resolve_local_model_dir(TTS_CANDIDATES) or "",
+        "stt_model": phowhisper.MODEL_ID,
+        "stt_cache": STT_CACHE_DIR or phowhisper.resolve_local_model_dir(STT_CANDIDATES) or "",
         "voices": len(vieneu_tts.PRESET_VOICES),
         "meta": {"provider": "runpod_serverless", "action": "health"},
     }
@@ -297,6 +367,50 @@ def handler(job):
                     except OSError:
                         pass
 
+    if action in STT_ACTIONS:
+        try:
+            path = _materialize_stt_audio(inp, temp_files)
+            if not path:
+                return {"error": "Missing audio (audio_base64 or audio_url) for STT."}
+            lang_stt = str(inp.get("language") or inp.get("lang") or "vi")
+            result = phowhisper.transcribe(path, language=lang_stt)
+            text = str(result.get("text") or "").strip()
+            chars = max(1, len(text))
+            return {
+                "status": "success",
+                "text": text,
+                "ai_response_text": text,
+                "input_detected": text,
+                "output": {
+                    "kind": "text",
+                    "text": text,
+                    "language": result.get("language") or lang_stt,
+                    "model": result.get("model") or phowhisper.MODEL_ID,
+                },
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "unit": "characters",
+                    "quantity": chars,
+                },
+                "meta": {
+                    "model": phowhisper.MODEL_ID,
+                    "provider": "runpod_serverless",
+                    "action": action,
+                    "language": result.get("language") or lang_stt,
+                },
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"PhoWhisper STT: {e}"}
+        finally:
+            for f in temp_files:
+                if os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+
     if LOAD_ERROR or model is None or tokenizer is None:
         return {"error": f"Worker model not loaded: {LOAD_ERROR or 'unknown'}"}
 
@@ -318,14 +432,12 @@ def handler(job):
     try:
         if audio_base64:
             input_source = "audio"
-            if stt_model is None:
-                return {"error": "Whisper STT is not available on this worker."}
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 tmp.write(base64.b64decode(audio_base64))
                 temp_audio_path = tmp.name
                 temp_files.append(temp_audio_path)
-            result = stt_model.transcribe(temp_audio_path)
-            user_text = result["text"].strip()
+            result = phowhisper.transcribe(temp_audio_path, language=str(lang or "vi"))
+            user_text = str(result.get("text") or "").strip()
 
         elif image_base64:
             input_source = "image"

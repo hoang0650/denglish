@@ -23,9 +23,12 @@ huggingface:
   repo_name: "phgrouptechs/Denglish-8B-Instruct"
 
 voice:
-  stt_model: "small" # base, small, medium
+  stt_model: "vinai/PhoWhisper-large"
   engine: vieneu
   tts_model: "pnnbao-ump/VieNeu-TTS-v3-Turbo"
+  # RunPod network volume — download once, serverless workers reuse.
+  cache_dir: "/runpod-volume/vieneu-tts-v3-turbo"
+  stt_cache_dir: "/runpod-volume/phowhisper-large"
   default_voice: "Adam" # one of 20 presets, or clone with ref_audio
   clone_denoise: true
 
