@@ -1,13 +1,13 @@
 import asyncio
-import edge_tts
 from faster_whisper import WhisperModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import os
 import yaml
-from PIL import Image, ImageOps, ImageFilter
+from PIL import Image, ImageOps
 import pytesseract
-import numpy as np
+
+import tts_vieneu as vieneu_tts
 
 # Cấu hình pytesseract (đảm bảo Tesseract OCR đã được cài đặt trên hệ thống)
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe' # Windows example
@@ -20,9 +20,8 @@ class VoiceTutor:
 
         self.model_path = self.config["model"]["output_dir"]
         self.stt_model_name = self.config["voice"]["stt_model"]
-        self.voice_en = self.config["voice"]["voice_en"]
-        self.voice_de = self.config["voice"]["voice_de"]
-        self.voice_vn = self.config["voice"]["voice_vn"]
+        self.default_voice = self.config["voice"].get("default_voice", "Adam")
+        self.tts_model = self.config["voice"].get("tts_model", vieneu_tts.MODEL_ID)
         
         # Vision settings
         self.ocr_enabled = self.config["vision"]["ocr_enabled"]
@@ -123,16 +122,25 @@ class VoiceTutor:
              
         return response
 
-    async def speak(self, text, output_path="response.mp3"):
-        # Detect language loosely or default to VN for explanations
-        voice = self.voice_vn 
-        # If text is mostly English/German, switch voice? 
-        # For a tutor, explanations are in VN, examples in EN/DE. 
-        # Keeping VN voice for now as it handles mixed well usually or we stick to primary lang.
-        
-        communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(output_path)
-        print(f"Audio saved to {output_path}")
+    async def speak(self, text, output_path="response.wav", voice="", ref_audio=""):
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            spoken = vieneu_tts.synthesize(
+                text,
+                voice=voice or self.default_voice,
+                lang="vi",
+                ref_audio=ref_audio,
+            )
+            if spoken.get("error"):
+                raise RuntimeError(spoken["error"])
+            raw = vieneu_tts.decode_audio_b64(spoken["audio_base64"])
+            with open(output_path, "wb") as f:
+                f.write(raw)
+            return spoken
+
+        spoken = await loop.run_in_executor(None, _run)
+        print(f"Audio saved to {output_path} voice={spoken.get('voice')} model={spoken.get('model')}")
 
 async def main():
     tutor = VoiceTutor()

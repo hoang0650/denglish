@@ -1,89 +1,183 @@
+"""Denglish RunPod Serverless / Public Endpoint worker.
+
+Host this image as a RunPod Serverless endpoint (GPU + network volume).
+AI Markets AI (`denglish-api` / ai.aimarkets.vn) calls it with:
+
+    POST https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync
+    Authorization: Bearer {RUNPOD_API_KEY}
+    {"input": {"text"|"prompt"|"messages": ..., "action": "chat"|"agent_turn"|"tts"|"list_voices"|...}}
+
+RunPod wraps this handler's return value as `output` on the job.
+"""
+
+from __future__ import annotations
+
+import base64
+import io
 import os
+import re
+import tempfile
+
 import runpod
 import torch
-import base64
-import tempfile
-import asyncio
-import io
-import re
-import whisper
-import edge_tts
-import pytesseract
-import threading
 from PIL import Image
-from pydub import AudioSegment
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+import tts_vieneu as vieneu_tts
+
+try:
+    import whisper
+except ImportError:  # optional on CPU-only debug images
+    whisper = None
+
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
+
+
+TTS_ACTIONS = {"tts", "voice_clone", "clone", "list_voices", "voices"}
+MODEL = os.environ.get("DENGLISH_MODEL_ID", "denglish-lora")
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+BASE_CANDIDATES = [
+    os.environ.get("DENGLISH_BASE_MODEL", "").strip(),
+    "/runpod-volume/llama3-base",
+    "/workspace/llama3-base",
+]
+LORA_CANDIDATES = [
+    os.environ.get("DENGLISH_LORA_MODEL", "").strip(),
+    "/runpod-volume/denglish-model",
+    "/workspace/denglish-model",
+]
+
+tokenizer = None
+model = None
+stt_model = None
+LOAD_ERROR = None
+
+
+def _first_dir(candidates):
+    for path in candidates:
+        if path and os.path.isdir(path):
+            return path
+    return ""
+
+
+def _load_models():
+    global tokenizer, model, stt_model, LOAD_ERROR
+    base = _first_dir(BASE_CANDIDATES)
+    lora = _first_dir(LORA_CANDIDATES)
+    if not base:
+        raise FileNotFoundError(
+            "Base model not found. Mount network volume at /runpod-volume/llama3-base "
+            "or set DENGLISH_BASE_MODEL."
+        )
+    tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=True)
+    dtype = torch.bfloat16 if DEVICE == "cuda" else torch.float32
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base,
+        torch_dtype=dtype,
+        device_map="auto" if DEVICE == "cuda" else None,
+        local_files_only=True,
+    )
+    if lora:
+        model_local = PeftModel.from_pretrained(base_model, lora, local_files_only=True)
+    else:
+        model_local = base_model
+    if DEVICE == "cpu":
+        model_local = model_local.to("cpu")
+    model = model_local
+    if whisper is not None and DEVICE == "cuda":
+        stt_model = whisper.load_model("small", device="cuda")
+    print(f"[denglish-worker] loaded base={base} lora={lora or 'none'} device={DEVICE}")
 
 
 try:
-    BASE_MODEL_PATH = "/runpod-volume/llama3-base"
-    LORA_MODEL_PATH = "/runpod-volume/denglish-model"
+    _load_models()
+except Exception as exc:  # noqa: BLE001
+    LOAD_ERROR = str(exc)
+    print(f"[denglish-worker] load failed: {LOAD_ERROR}")
 
-    if not os.path.exists(BASE_MODEL_PATH):
-        raise FileNotFoundError(f"Không thấy Base Model tại {BASE_MODEL_PATH}")
 
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, local_files_only=True)
-    
-    # RTX 5090 cần cấu hình này để tối ưu
-    base_model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_PATH,
-        torch_dtype=torch.bfloat16,
-        device_map="auto", # Hoặc "cuda"
-        local_files_only=True
-    )
-    model = PeftModel.from_pretrained(base_model, LORA_MODEL_PATH, local_files_only=True)
-    stt_model = whisper.load_model("small", device="cuda")
-    
-    print("--- [Denglish-AI] Model loaded successfully! ---")
+def _text_from_messages(messages) -> str:
+    if not isinstance(messages, list):
+        return ""
+    parts = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            parts.append(content.strip())
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text") or "").strip())
+    return "\n".join(p for p in parts if p)
 
-except Exception as e:
-    print(f"❌ LỖI KHỞI TẠO NGHIÊM TRỌNG: {str(e)}")
-    # Giữ worker sống để bạn kịp đọc Log thay vì báo Unhealthy rồi tắt
-    import time
-    time.sleep(600)
 
-# ==========================================
-# 2. MODULE XỬ LÝ ÂM THANH TAM NGỮ
-# ==========================================
-async def generate_trilingual_audio(full_text, output_path):
-    """Tách văn bản và ghép giọng chuẩn: Anh, Đức, Việt"""
-    lines = [line.strip() for line in full_text.split('\n') if line.strip()]
-    combined = AudioSegment.empty()
-    silence = AudioSegment.silent(duration=500)
+def _normalize_input(job: dict) -> dict:
+    raw = job.get("input") if isinstance(job, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {"text": str(raw)}
+    inp = dict(raw)
+    text = str(inp.get("text") or inp.get("prompt") or inp.get("message") or "").strip()
+    if not text:
+        text = _text_from_messages(inp.get("messages")).strip()
+    inp["text"] = text
+    if inp.get("image") and not inp.get("image_base64"):
+        img = str(inp["image"])
+        if img.startswith("data:") and "," in img:
+            inp["image_base64"] = img.split(",", 1)[1]
+        elif len(img) > 256 and "://" not in img[:16]:
+            inp["image_base64"] = img
+    if inp.get("audio") and not inp.get("audio_base64"):
+        inp["audio_base64"] = inp["audio"]
+    return inp
 
-    for line in lines:
-        upper_line = line.upper()
-        # Xác định giọng đọc và làm sạch văn bản
-        if any(k in upper_line for k in ["ENGLISH:", "TIẾNG ANH:", "ANH NGỮ:"]):
-            voice = "en-US-EmmaNeural"
-            clean_text = re.sub(r'^.*?:', '', line).strip()
-        elif any(k in upper_line for k in ["GERMAN:", "TIẾNG ĐỨC:", "DEUTSCH:"]):
-            voice = "de-DE-KatjaNeural"
-            clean_text = re.sub(r'^.*?:', '', line).strip()
-        else:
-            voice = "vi-VN-HoaiMyNeural"
-            # Loại bỏ prefix Tiếng Việt nếu có, nếu không giữ nguyên
-            clean_text = re.sub(r'^.*?:', '', line).strip() if ":" in line[:15] else line
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_part:
-            temp_p = tmp_part.name
-        
-        try:
-            communicate = edge_tts.Communicate(clean_text, voice)
-            await communicate.save(temp_p)
-            segment = AudioSegment.from_mp3(temp_p)
-            combined += segment + silence
-        except Exception as e:
-            print(f"TTS Error: {e}")
-        finally:
-            if os.path.exists(temp_p): os.remove(temp_p)
+def _wants_tts(inp: dict, action: str) -> bool:
+    if action == "agent_turn":
+        return False
+    if action in TTS_ACTIONS:
+        return action not in {"list_voices", "voices"}
+    if "tts" in inp:
+        return bool(inp.get("tts"))
+    if "want_audio" in inp:
+        return bool(inp.get("want_audio"))
+    return False
 
-    combined.export(output_path, format="mp3")
 
-# ==========================================
-# 2b. MEMORY DELTA HELPERS (agent_turn)
-# ==========================================
+def _materialize_ref(inp: dict, action: str, temp_files: list) -> str:
+    url = str(inp.get("ref_audio") or inp.get("ref_audio_url") or inp.get("audio_url") or "").strip()
+    b64 = inp.get("ref_audio_base64")
+    if action in {"tts", "voice_clone", "clone"}:
+        b64 = b64 or inp.get("audio_base64")
+    path = ""
+    if url.startswith("http://") or url.startswith("https://"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            path = tmp.name
+        vieneu_tts.download_ref(url, path)
+        temp_files.append(path)
+        return path
+    if b64:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            path = tmp.name
+        vieneu_tts.write_ref_bytes(vieneu_tts.decode_audio_b64(str(b64)), path)
+        temp_files.append(path)
+        return path
+    return path
+
+
+def _is_health(inp: dict) -> bool:
+    if inp.get("health") or inp.get("health_check") or inp.get("ping"):
+        return True
+    keys = {k for k, v in inp.items() if v not in (None, "", [], {})}
+    return not keys
+
+
 def _strip_memory_delta(text: str) -> str:
     return re.sub(
         r"MEMORY_DELTA\s*[:=]?\s*\{.*\}\s*$",
@@ -96,7 +190,11 @@ def _strip_memory_delta(text: str) -> str:
 def _extract_memory_delta(ai_response: str, user_text: str) -> dict:
     import json
 
-    m = re.search(r"MEMORY_DELTA\s*[:=]?\s*(\{.*\})\s*$", ai_response or "", re.DOTALL | re.IGNORECASE)
+    m = re.search(
+        r"MEMORY_DELTA\s*[:=]?\s*(\{.*\})\s*$",
+        ai_response or "",
+        re.DOTALL | re.IGNORECASE,
+    )
     if m:
         try:
             parsed = json.loads(m.group(1))
@@ -107,9 +205,8 @@ def _extract_memory_delta(ai_response: str, user_text: str) -> dict:
                     "habits": parsed.get("habits") or [],
                     "entities": parsed.get("entities") or [],
                 }
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
-    # Fallback heuristic extraction (still ephemeral — API persists)
     lower = (user_text or "").lower()
     delta = {"facts": [], "preferences": [], "habits": [], "entities": []}
     if user_text:
@@ -122,55 +219,131 @@ def _extract_memory_delta(ai_response: str, user_text: str) -> dict:
     return delta
 
 
-# ==========================================
-# 3. WORKER HANDLER CHÍNH
-# ==========================================
+def _health_payload():
+    return {
+        "ok": True,
+        "status": "success",
+        "text": "ok",
+        "model": MODEL,
+        "device": DEVICE,
+        "loaded": LOAD_ERROR is None,
+        "error": LOAD_ERROR,
+        "tts_model": vieneu_tts.MODEL_ID,
+        "voices": len(vieneu_tts.PRESET_VOICES),
+        "meta": {"provider": "runpod_serverless", "action": "health"},
+    }
+
+
 def handler(job):
-    job_input = job.get("input", {})
-    text_input = job_input.get("text")
-    image_base64 = job_input.get("image_base64")
-    audio_base64 = job_input.get("audio_base64")
-    
-    lang = job_input.get("lang", "en")  # en, de
-    action = job_input.get("action", "chat") 
-    target_level = job_input.get("level", "A1") 
-    test_count = job_input.get("test_count", 5)
-    test_context = job_input.get("test_context", "")
-    username = job_input.get("username", "Học viên")
-    topic = job_input.get("topic", "General Conversation")
-    memory_context = job_input.get("memory_context") or ""
-    
+    inp = _normalize_input(job if isinstance(job, dict) else {})
+    if _is_health(inp):
+        return _health_payload()
+
+    action = str(inp.get("action") or "chat")
+    lang = inp.get("lang", "en")
+    temp_files = []
+
+    if action in {"list_voices", "voices"}:
+        voices = vieneu_tts.list_voices()
+        return {
+            "status": "success",
+            "text": f"{len(voices)} preset voices",
+            "voices": voices,
+            "output": {"kind": "voices", "voices": voices, "model": vieneu_tts.MODEL_ID},
+            "meta": {"model": vieneu_tts.MODEL_ID, "provider": "runpod_serverless", "action": action},
+        }
+
+    if action in {"tts", "voice_clone", "clone"}:
+        try:
+            ref = _materialize_ref(inp, action, temp_files)
+            result = vieneu_tts.synthesize(
+                inp.get("text") or "",
+                voice=str(inp.get("voice") or inp.get("speaker") or ""),
+                lang=str(lang),
+                ref_audio=ref,
+                denoise=inp.get("denoise", True),
+            )
+            if result.get("error"):
+                return {"error": result["error"]}
+            chars = max(1, len(str(inp.get("text") or "")))
+            return {
+                "status": "success",
+                "text": result.get("text"),
+                "ai_response_text": result.get("text"),
+                "ai_response_audio": result.get("audio_base64"),
+                "output": result,
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "unit": "characters",
+                    "quantity": chars,
+                },
+                "meta": {
+                    "model": vieneu_tts.MODEL_ID,
+                    "provider": "runpod_serverless",
+                    "action": action,
+                    "cloned": result.get("cloned"),
+                    "voice": result.get("voice"),
+                },
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"VieNeu TTS: {e}"}
+        finally:
+            for f in temp_files:
+                if os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+
+    if LOAD_ERROR or model is None or tokenizer is None:
+        return {"error": f"Worker model not loaded: {LOAD_ERROR or 'unknown'}"}
+
+    text_input = inp.get("text")
+    image_base64 = inp.get("image_base64")
+    audio_base64 = inp.get("audio_base64") if action not in TTS_ACTIONS else None
+
+    target_level = inp.get("level", "A1")
+    test_count = inp.get("test_count", 5)
+    test_context = inp.get("test_context", "")
+    username = inp.get("username", "Học viên")
+    topic = inp.get("topic", "General Conversation")
+    memory_context = inp.get("memory_context") or ""
+
     user_text = ""
     input_source = ""
     temp_files = []
 
     try:
-        # --- BƯỚC 1: XỬ LÝ ĐẦU VÀO ---
         if audio_base64:
             input_source = "audio"
+            if stt_model is None:
+                return {"error": "Whisper STT is not available on this worker."}
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 tmp.write(base64.b64decode(audio_base64))
                 temp_audio_path = tmp.name
                 temp_files.append(temp_audio_path)
             result = stt_model.transcribe(temp_audio_path)
             user_text = result["text"].strip()
-        
+
         elif image_base64:
             input_source = "image"
+            if pytesseract is None:
+                return {"error": "OCR (pytesseract) is not available on this worker."}
             image = Image.open(io.BytesIO(base64.b64decode(image_base64)))
             user_text = pytesseract.image_to_string(image, lang="eng+deu").strip()
-        
+
         elif text_input:
             input_source = "text"
             user_text = text_input.strip()
 
         else:
-            return {"error": "Thiếu dữ liệu đầu vào (text/image/audio)."}
+            return {"error": "Missing input (text/prompt/messages, image_base64, or audio_base64)."}
 
         if not user_text and "generate_test" not in action:
-            return {"error": "Không thể trích xuất nội dung từ đầu vào."}
+            return {"error": "Could not extract text from the input."}
 
-        # --- BƯỚC 2: XÂY DỰNG PROMPT THEO LOGIC CỦA BẠN ---
         lang_name = "Tiếng Anh" if lang == "en" else "Tiếng Đức"
         target_lang_key = "English" if lang == "en" else "German"
 
@@ -183,7 +356,7 @@ def handler(job):
                 f"{lang_name}: [{test_count} câu hỏi {target_lang_key}]"
             )
             user_msg = "Hãy ra đề kiểm tra cho tôi."
-            
+
         elif action == "generate_test_de" or (action == "generate_test" and lang == "de"):
             system_prompt = (
                 f"Bạn là Giám khảo khảo thí ngôn ngữ. Hãy tạo một bài kiểm tra ngắn gồm {test_count} câu hỏi "
@@ -223,7 +396,7 @@ def handler(job):
             )
             user_msg = user_text if user_text else "Hello"
 
-        else: # Mặc định là Chat/Luyện nói
+        else:
             system_prompt = (
                 f"Bạn là Denglish AI - AI chuyên luyện nói Face-to-Face {target_lang_key} cho học viên người Việt Nam với chủ đề {topic} theo cấp độ {target_level}.\n"
                 f"Người dùng vừa NÓI: '{user_text}'.\n"
@@ -238,28 +411,30 @@ def handler(job):
             )
             user_msg = user_text if user_text else "Bắt đầu hội thoại."
 
-        # Áp dụng template Llama 3
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_msg}
+            {"role": "user", "content": user_msg},
         ]
-        
+
         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
+        inputs = tokenizer([prompt], return_tensors="pt")
+        if DEVICE == "cuda":
+            inputs = inputs.to("cuda")
 
         input_tokens = int(inputs.input_ids.shape[-1])
+        max_new = int(inp.get("max_new_tokens") or inp.get("max_tokens") or 1024)
+        temperature = float(inp.get("temperature") or 0.4)
 
-        # Sinh văn bản (Sử dụng RTX 5090 cực nhanh)
         with torch.no_grad():
             outputs = model.generate(
-                **inputs, 
-                max_new_tokens=1024, 
-                temperature=0.4, 
+                **inputs,
+                max_new_tokens=max_new,
+                temperature=temperature,
                 top_p=0.9,
-                pad_token_id=tokenizer.eos_token_id
+                pad_token_id=tokenizer.eos_token_id,
             )
 
-        generated_ids = outputs[0][len(inputs.input_ids[0]):]
+        generated_ids = outputs[0][len(inputs.input_ids[0]) :]
         output_tokens = int(generated_ids.shape[-1])
         ai_response = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
@@ -270,65 +445,76 @@ def handler(job):
             visible_text = _strip_memory_delta(ai_response)
 
         audio_base64_out = None
-        # Agent turns skip TTS — marketplace chat is text-first.
-        if action != "agent_turn":
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_out:
-                final_audio_path = tmp_out.name
-                temp_files.append(final_audio_path)
-
-            def run_tts():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(generate_trilingual_audio(visible_text, final_audio_path))
-                loop.close()
-
-            tts_thread = threading.Thread(target=run_tts)
-            tts_thread.start()
-            tts_thread.join()
-
-            with open(final_audio_path, "rb") as f:
-                audio_base64_out = base64.b64encode(f.read()).decode('utf-8')
+        tts_meta = None
+        if _wants_tts(inp, action):
+            try:
+                ref = _materialize_ref(inp, action, temp_files)
+                spoken = vieneu_tts.synthesize(
+                    visible_text,
+                    voice=str(inp.get("voice") or inp.get("speaker") or ""),
+                    lang=str(lang),
+                    ref_audio=ref,
+                    denoise=inp.get("denoise", True),
+                )
+                if spoken.get("error"):
+                    raise RuntimeError(spoken["error"])
+                audio_base64_out = spoken.get("audio_base64")
+                tts_meta = {"voice": spoken.get("voice"), "cloned": spoken.get("cloned"), "tts_model": vieneu_tts.MODEL_ID}
+            except Exception as e:  # noqa: BLE001
+                return {"error": f"VieNeu TTS: {e}"}
 
         usage = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
             "unit": "tokens",
+            "quantity": input_tokens + output_tokens,
         }
         output = {
+            "kind": "text",
             "input_detected": user_text,
             "ai_response_text": visible_text,
             "ai_response_audio": audio_base64_out,
             "text": visible_text,
         }
+        if audio_base64_out:
+            output["audio_base64"] = audio_base64_out
+            output["kind"] = "audio"
+            output["format"] = "wav"
+            if tts_meta:
+                output.update(tts_meta)
         if memory_delta is not None:
             output["memory_delta"] = memory_delta
-        # Flat keys kept for Telegram/legacy clients; nested output for marketplace router.
         return {
             "status": "success",
             "input_detected": user_text,
             "ai_response_text": visible_text,
             "ai_response_audio": audio_base64_out,
+            "text": visible_text,
             "output": output,
             "memory_delta": memory_delta,
             "usage": usage,
             "meta": {
-                "model": "denglish-lora",
+                "model": MODEL,
                 "provider": "runpod_serverless",
                 "input_source": input_source,
                 "action": action,
+                "tts_model": vieneu_tts.MODEL_ID if audio_base64_out else None,
             },
         }
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"error": f"Lỗi: {str(e)}"}
     finally:
-        # Giải phóng VRAM RTX 5090 và xóa file tạm
-        torch.cuda.empty_cache()
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
         for f in temp_files:
             if os.path.exists(f):
-                try: os.remove(f)
-                except: pass
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
 
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler})

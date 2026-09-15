@@ -7,8 +7,6 @@ bitsandbytes
 accelerate
 faster-whisper
 openai-whisper
-asyncio
-edge-tts
 huggingface_hub
 pandas
 PyYAML
@@ -16,3 +14,5 @@ wandb
 pydub
 Pillow
 pytesseract
+soundfile
+vieneu>=3.3.0

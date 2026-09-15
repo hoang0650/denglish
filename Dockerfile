@@ -4,6 +4,6 @@ RUN apt-get update && apt-get install -y ffmpeg git tesseract-ocr libtesseract-d
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -U pip && pip install --no-cache-dir -r requirements.txt
-COPY handler.py .
+COPY handler.py tts_vieneu.py .
 RUN mkdir -p /runpod-volume/llama3-base /runpod-volume/denglish-model
 CMD ["python", "-u", "handler.py"]

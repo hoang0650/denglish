@@ -1,6 +1,34 @@
 # AI English-German Tutor with Voice & Vietnamese Support
 
-Dự án này cung cấp bộ code Python để xây dựng một gia sư AI đa năng, có khả năng nghe, hiểu và trả lời bằng giọng nói tiếng Anh và tiếng Đức, đồng thời sử dụng tiếng Việt để giải thích lỗi sai.
+`handler.py` is the **RunPod Serverless / Public Endpoint worker** (GPU). AI Markets AI (`denglish-api` at `ai.aimarkets.vn`) does **not** load this model — it calls your hosted endpoint:
+
+```text
+aimarkets.vn → api.aimarkets.vn → ai.aimarkets.vn
+  → POST https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync
+    Authorization: Bearer {RUNPOD_API_KEY}
+    {"input": {"text"|"prompt": "...", "action": "chat"|"agent_turn", "tts": false}}
+```
+
+## Host on RunPod
+
+1. Build/push the Docker image (`Dockerfile` → `python -u handler.py`).
+2. Network volume with base model at `/runpod-volume/llama3-base` and LoRA at `/runpod-volume/denglish-model` (or `/workspace/...`).
+3. Create a **Serverless endpoint**, attach this image + GPU + volume. Copy the endpoint id.
+4. On **ai.aimarkets.vn** set `RUNPOD_API_KEY` and `RUNPOD_ENDPOINT_ID` (that id). Do not put the key in the web/app.
+
+Job input (also `prompt` / OpenAI `messages` — the API maps them to `text` before calling you):
+
+```json
+{ "input": { "text": "Hello", "action": "chat", "lang": "en", "tts": false } }
+```
+
+TTS/audio uses **VieNeu-TTS-v3-Turbo** (`pnnbao-ump/VieNeu-TTS-v3-Turbo`): 20 preset voices or clone from a 3–8s sample (`ref_audio` / `audio_url`).
+
+```json
+{ "input": { "action": "tts", "text": "Xin chào", "voice": "Ngọc Huyền" } }
+{ "input": { "action": "tts", "text": "Xin chào", "audio_url": "https://…/sample.mp3" } }
+{ "input": { "action": "list_voices" } }
+```
 
 ## 1. Cấu trúc dự án
 ```

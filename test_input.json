@@ -1,10 +1,8 @@
 {
-    "input": {
-        "text": "Hello, I want to practice my English speaking skills today.",
-        "lang": "en",
-        "action": "chat",
-        "level": "B1",
-        "topic": "Travel and Food",
-        "username": "Hoàng"
-    }
+  "input": {
+    "action": "tts",
+    "text": "Xin chào, đây là VieNeu-TTS phiên bản Turbo.",
+    "voice": "Ngọc Huyền",
+    "lang": "vi"
+  }
 }

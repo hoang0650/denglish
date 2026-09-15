@@ -24,9 +24,10 @@ huggingface:
 
 voice:
   stt_model: "small" # base, small, medium
-  voice_en: "en-US-EmmaNeural"
-  voice_de: "de-DE-KatjaNeural"
-  voice_vn: "vi-VN-HoaiMyNeural"
+  engine: vieneu
+  tts_model: "pnnbao-ump/VieNeu-TTS-v3-Turbo"
+  default_voice: "Adam" # one of 20 presets, or clone with ref_audio
+  clone_denoise: true
 
 vision:
   ocr_enabled: True
