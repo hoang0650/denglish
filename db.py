@@ -4,7 +4,7 @@ The worker writes one row per job into `aimx_jobs` (kind, model, tier, status,
 gpu_seconds, artifact url, error, small result, timestamps) and one row per
 model into `aimx_volume_status` after a prefetch.
 
-Connection: AIMX_DATABASE_URL, else DATABASE_URL. TLS is libpq's: put
+Connection: AIMX_DATABASE_URL, else AIMX_PG_DSN, else DATABASE_URL. TLS is libpq's: put
 `?sslmode=verify-full&sslrootcert=/path/ca.crt` (or `sslmode=require`) in the
 URL, or set AIMX_DB_SSLMODE / PGSSLROOTCERT. Nothing here ever raises into the
 job: a failed write is logged without the URL or password and the job goes on.
@@ -85,7 +85,12 @@ ON CONFLICT (volume, model_key) DO UPDATE SET
 
 
 def database_url() -> str:
-    return (os.environ.get("AIMX_DATABASE_URL") or os.environ.get("DATABASE_URL") or "").strip()
+    return (
+        os.environ.get("AIMX_DATABASE_URL")
+        or os.environ.get("AIMX_PG_DSN")
+        or os.environ.get("DATABASE_URL")
+        or ""
+    ).strip()
 
 
 def enabled() -> bool:

@@ -1,22 +1,22 @@
 # Runtime deps of chatterbox-tts 0.1.7, vieneu 3.8.3 (mode "standard") and
 # neucodec 0.0.6, without their torch/transformers/diffusers pins.
 # chatterbox-tts
-s3tokenizer
-resemble-perth>=1.0.1
+s3tokenizer==0.3.0
+resemble-perth==1.0.1
 conformer==0.3.2
-omegaconf
-pyloudnorm
-spacy-pkuseg
-pykakasi
+omegaconf==2.4.0
+pyloudnorm==0.2.0
+spacy-pkuseg==1.0.1
+pykakasi==2.3.0
 # vieneu
-sea-g2p>=0.9.1
-onnxruntime>=1.20.0
-soxr
-kaldi-native-fbank>=1.20
-tokenizers>=0.20
-PyYAML
+sea-g2p==0.10.0
+onnxruntime==1.31.0
+soxr==1.1.0
+kaldi-native-fbank==1.22.4
+tokenizers==0.22.2
+PyYAML==6.0.3
 # neucodec
-local_attention>=1.11.1
-torchao>=0.12.0
-torchtune>=0.3.1
+local_attention==1.11.2
+torchao==0.13.0
+torchtune==0.6.1
 vector-quantize-pytorch==1.17.8

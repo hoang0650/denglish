@@ -15,7 +15,7 @@ finishedAt, gpu_seconds, error and the artifact keys, drops the payload, and
 removes the id from the running set and both lanes. reap() fails jobs that ran
 longer than the kind's timeout (AIMX_TIMEOUT_*; same defaults as the API).
 
-Connection: REDIS_URL (redis:// or rediss://). For rediss, REDIS_TLS_CA_FILE
+Connection: AIMX_REDIS_URL, else REDIS_URL (redis:// or rediss://). For rediss, REDIS_TLS_CA_FILE
 points at the CA bundle; certificates are verified unless
 REDIS_TLS_INSECURE=1. Run this puller only when AIMX_RUNTIME=pod, and do not
 also run `python -m aimx_pod_worker` against the same Redis.
@@ -61,7 +61,9 @@ def bind(client: Any) -> None:
 
 
 def redis_url() -> str:
-    return (os.environ.get("REDIS_URL") or "redis://127.0.0.1:6379/0").strip()
+    return (
+        os.environ.get("AIMX_REDIS_URL") or os.environ.get("REDIS_URL") or "redis://127.0.0.1:6379/0"
+    ).strip()
 
 
 def safe_url(url: str) -> str:

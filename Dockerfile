@@ -9,18 +9,30 @@ ENV PYTHONUNBUFFERED=1 \
     AIMX_RUNTIME=serverless \
     AIMX_VOLUME=/runpod-volume
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg libsndfile1 \
+ && apt-get install -y --no-install-recommends ffmpeg libsndfile1 socat ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
+# Tailscale (userspace mode, started by scripts/entrypoint.sh only when TS_AUTHKEY is set).
+ARG TAILSCALE_VERSION=1.104.2
+RUN curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz" -o /tmp/ts.tgz \
+ && tar -xzf /tmp/ts.tgz -C /tmp \
+ && install -m 0755 "/tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscale" "/tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscaled" /usr/local/bin/ \
+ && rm -rf /tmp/ts.tgz "/tmp/tailscale_${TAILSCALE_VERSION}_amd64" \
+ && tailscale version
 WORKDIR /app
-COPY requirements.worker.txt requirements.gpu.txt requirements.tts.txt constraints-torch.txt ./
-# Pin CUDA torch first; every later install runs with -c constraints-torch.txt.
+COPY requirements.worker.txt requirements.gpu.txt requirements.tts.txt constraints-torch.txt requirements.lock.txt ./
+# Pin CUDA torch first; every later install runs with -c requirements.lock.txt
+# (full pinned set, generated with uv for Python 3.12 + torch 2.8.0/cu128).
+ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu128
+# Ubuntu ships cryptography and six as distro packages without a pip RECORD file,
+# so pip cannot uninstall them; lay the pinned versions over them first.
 RUN pip install --no-cache-dir -U pip \
+ && pip install --no-cache-dir --ignore-installed --no-deps -c requirements.lock.txt cryptography six \
  && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 \
       torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 \
- && pip install --no-cache-dir -c constraints-torch.txt -r requirements.worker.txt
+ && pip install --no-cache-dir -c requirements.lock.txt -r requirements.worker.txt
 RUN if [ "$AIMX_GPU_DEPS" = "1" ]; then \
-      pip install --no-cache-dir -c constraints-torch.txt -r requirements.gpu.txt \
-   && pip install --no-cache-dir -c constraints-torch.txt -r requirements.tts.txt \
+      pip install --no-cache-dir -c requirements.lock.txt -r requirements.gpu.txt \
+   && pip install --no-cache-dir -c requirements.lock.txt -r requirements.tts.txt \
    && pip install --no-cache-dir --no-deps chatterbox-tts==0.1.7 vieneu==3.8.3 neucodec==0.0.6 \
    && python -c "import torch; assert torch.__version__.startswith('2.8.0'), torch.__version__" ; \
     fi
@@ -28,4 +40,6 @@ COPY catalog.py db.py media.py handler.py pod_pull.py http_server.py prefetch_vo
 COPY migrations ./migrations
 COPY scripts ./scripts
 RUN mkdir -p /runpod-volume/huggingface /runpod-volume/outputs
-CMD ["python", "-u", "handler.py"]
+# handler.py calls runpod.serverless.start({"handler": handler, ...}).
+# The entrypoint only adds the optional Tailscale forwards in front of it.
+CMD ["bash", "/app/scripts/entrypoint.sh"]
