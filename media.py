@@ -1,5 +1,8 @@
 """Input media for jobs: base64, an https URL, or a file already on the volume.
 
+Downloaded and decoded inputs are written to local scratch (artifacts.temp_file,
+never the model volume) and deleted when the job ends (artifacts.cleanup).
+
 URLs are fetched with a size cap and only when every resolved address is
 public (no loopback, private, link-local, or metadata addresses), so a job
 cannot make the GPU box read internal services.
@@ -11,10 +14,11 @@ import base64
 import ipaddress
 import os
 import socket
-import tempfile
 import urllib.parse
 import urllib.request
 from typing import Optional
+
+import artifacts
 
 MAX_BYTES = int(os.environ.get("AIMX_MEDIA_MAX_BYTES", str(100 * 1024 * 1024)) or str(100 * 1024 * 1024))
 
@@ -73,7 +77,7 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
 def fetch(url: str, suffix: str = "") -> str:
     parsed = assert_safe_url(url)
     req = urllib.request.Request(parsed.geturl(), headers={"User-Agent": "aimx-worker/1"})
-    fd, path = tempfile.mkstemp(suffix=suffix or os.path.splitext(parsed.path)[1][:8])
+    fd, path = artifacts.temp_file(suffix or os.path.splitext(parsed.path)[1][:8])
     total = 0
     opener = urllib.request.build_opener(_SafeRedirect)
     with opener.open(req, timeout=60) as resp, os.fdopen(fd, "wb") as out:
@@ -95,7 +99,7 @@ def from_base64(data: str, suffix: str = "") -> str:
     blob = base64.b64decode(raw, validate=False)
     if len(blob) > MAX_BYTES:
         raise MediaError("media is too large")
-    fd, path = tempfile.mkstemp(suffix=suffix)
+    fd, path = artifacts.temp_file(suffix)
     with os.fdopen(fd, "wb") as out:
         out.write(blob)
     return path

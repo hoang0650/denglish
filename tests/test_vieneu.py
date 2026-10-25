@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import os
+import pathlib
 
 import pytest
 
@@ -26,6 +28,7 @@ class FakeEngine:
         return {"codes": [1, 2], "text": f"ref {name or 'Vinh'}"}
 
     def infer(self, text, **kwargs):
+        self.ref_existed = bool(kwargs.get("ref_audio")) and os.path.isfile(kwargs["ref_audio"])
         self.calls.append((text, kwargs))
         return [0.0] * 10
 
@@ -79,7 +82,10 @@ def test_vieneu_preset_synthesis(live):
     assert out["status"] == "succeeded", out
     assert out["model"] == "pnnbao-ump/VieNeu-TTS" and out["license"] == "Apache-2.0"
     assert out["voice"] == "Ngoc" and out["cloned"] is False and out["sample_rate"] == 24000
-    assert os.path.isfile(out["artifact_url"])
+    # Output is persisted (inline here; Postgres/Redis in production) and never left on disk.
+    assert out["artifact_url"].startswith("aimx-artifact://") and out["audio_url"] == out["artifact_url"]
+    assert base64.b64decode(out["artifact_base64"]) == b"RIFF"
+    assert not any(p.suffix == ".wav" for p in pathlib.Path(handler.VOLUME).rglob("*"))
     assert engine.calls[0][1]["voice"]["text"] == "ref Ngoc"
     assert used == ["vieneu-tts"]
 
@@ -97,7 +103,8 @@ def test_vieneu_clone_with_ref_text(live):
     out = handler.execute("tts", {"text": "Xin chào", "ref_audio_base64": "UklGRg==", "ref_text": "mẫu giọng"})
     assert out["status"] == "succeeded" and out["cloned"] is True and out["voice"] == "cloned"
     kwargs = engine.calls[-1][1]
-    assert kwargs["ref_text"] == "mẫu giọng" and os.path.isfile(kwargs["ref_audio"]) and "voice" not in kwargs
+    assert kwargs["ref_text"] == "mẫu giọng" and engine.ref_existed and "voice" not in kwargs
+    assert not os.path.exists(kwargs["ref_audio"])  # scratch input deleted after the job
 
 
 def test_vieneu_clone_blocks_internal_ref_urls(live):

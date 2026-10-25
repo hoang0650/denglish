@@ -11,7 +11,9 @@ providers/aimx_queue.py + cache/client.py in ai-marketplace-ai:
 Lease: paid lane first; inside a lane the highest score wins (ZREVRANGE 0 0)
 and the head job is never skipped. A video or train job uses the GPU alone;
 image and TTS share AIMX_POD_LIGHT_SLOTS (default 3). finish() writes status,
-finishedAt, gpu_seconds, error and the artifact keys, drops the payload, and
+finishedAt, gpu_seconds, error and the artifact keys (the file itself is in
+{prefix}:aimx:artifact:{artifact_id} and Postgres aimx_job_artifacts, never on
+the volume; artifact_base64 is never copied into the row), drops the payload, and
 removes the id from the running set and both lanes. reap() fails jobs that ran
 longer than the kind's timeout (AIMX_TIMEOUT_*; same defaults as the API).
 
@@ -37,7 +39,8 @@ import handler
 
 JOB_TTL = 7 * 24 * 3600
 _client: Any = None
-_ARTIFACT_KEYS = ("audio_url", "video_url", "image_url", "artifact_url", "model", "license", "stage")
+_ARTIFACT_KEYS = ("audio_url", "video_url", "image_url", "artifact_url", "model", "license", "stage",
+                  "artifact_id", "artifact_mime", "artifact_bytes", "artifact_sha256", "artifact_store")
 # Additive keys so text/vector results reach the API through the job row.
 _RESULT_KEYS = ("text", "embeddings", "dim", "scores", "ranking", "usage", "chunks", "language", "duration_sec")
 
@@ -284,7 +287,7 @@ def step() -> int:
         return 0
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
     try:
-        result = handler.execute(str(job.get("kind") or ""), payload)
+        result = handler.execute(str(job.get("kind") or ""), payload, job_id=str(job["id"]))
     except Exception as exc:  # noqa: BLE001
         finish(str(job["id"]), status="failed", error=str(exc)[:300])
         return 1

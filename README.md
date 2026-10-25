@@ -228,4 +228,11 @@ only touch `~aimarkets:aimx:*` with `get set zrevrange zrem sadd srem smembers p
 
 The marketplace must add the new kinds (`bg_remove`, `stt`, `ocr`, `embed`, `rerank`, `music`, `llm`) to
 `providers/aimx_models.py` before enqueuing them for pod mode; serverless/HTTP accept them now.
-Artifacts are written to `/runpod-volume/outputs` (no object-storage upload yet).
+Job outputs never touch the network volume, which holds model weights and caches only. Each output file is
+written to local scratch (`AIMX_SCRATCH_DIR`, default `/tmp/aimx-jobs`; paths under the volume are refused),
+stored in Postgres `aimx_job_artifacts` (bytea, up to `AIMX_DB_ARTIFACT_MAX_BYTES`, 100 MB) and in Redis
+`{prefix}:aimx:artifact:{id}` (base64, 7 days, when Redis is configured and the blob fits `REDIS_MAX_VALUE_BYTES`),
+then deleted. The result carries `artifact_url` = `aimx-artifact://<id>` plus `artifact_id`, `artifact_mime`,
+`artifact_bytes`, `artifact_sha256`, `artifact_store`; serverless responses also inline `artifact_base64` up to
+`AIMX_INLINE_ARTIFACT_MAX_BYTES` (8 MB). Downloaded/decoded inputs also live in scratch and are deleted after the job.
+If no store accepts an output, the job fails instead of keeping the file.

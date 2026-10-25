@@ -1,8 +1,10 @@
 """Postgres persistence for AIMX jobs (psycopg 3).
 
 The worker writes one row per job into `aimx_jobs` (kind, model, tier, status,
-gpu_seconds, artifact url, error, small result, timestamps) and one row per
-model into `aimx_volume_status` after a prefetch.
+gpu_seconds, artifact url, error, small result, timestamps), one row per
+output file into `aimx_job_artifacts` (bytea; see artifacts.py), and one row
+per model into `aimx_volume_status` after a prefetch. Job outputs live only in
+Postgres and Redis, never on the model volume.
 
 Connection: AIMX_DATABASE_URL, else AIMX_PG_DSN, else DATABASE_URL. TLS is libpq's: put
 `?sslmode=verify-full&sslrootcert=/path/ca.crt` (or `sslmode=require`) in the
@@ -72,6 +74,12 @@ ON CONFLICT (id) DO UPDATE SET
     started_at = COALESCE(aimx_jobs.started_at, EXCLUDED.started_at),
     finished_at = EXCLUDED.finished_at,
     updated_at = now()
+"""
+
+_INSERT_ARTIFACT = """
+INSERT INTO aimx_job_artifacts (id, job_id, kind, mime, bytes, sha256, filename, data, created_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+ON CONFLICT (id) DO NOTHING
 """
 
 _UPSERT_VOLUME = """
@@ -203,7 +211,7 @@ def _drop() -> None:
     _conn = None
 
 
-def _execute(sql: str, params: tuple) -> bool:
+def _execute(sql: str, params: tuple, timeout_ms: Optional[int] = None) -> bool:
     global _down_until
     with _lock:
         conn = _get()
@@ -211,7 +219,11 @@ def _execute(sql: str, params: tuple) -> bool:
             return False
         try:
             with conn.cursor() as cur:
+                if timeout_ms:
+                    cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
                 cur.execute(sql, params)
+                if timeout_ms:
+                    cur.execute("RESET statement_timeout")
             return True
         except Exception as exc:  # noqa: BLE001
             _log(f"write failed: {_safe(exc)}")
@@ -258,7 +270,8 @@ def _str(value: Any, limit: int = 2000) -> Optional[str]:
 
 
 _RESULT_KEYS = ("text", "language", "embeddings", "dim", "scores", "ranking", "usage", "stage",
-                "audio_url", "video_url", "image_url", "artifact_url", "duration_sec", "chunks")
+                "audio_url", "video_url", "image_url", "artifact_url", "duration_sec", "chunks",
+                "artifact_id", "artifact_mime", "artifact_bytes", "artifact_sha256", "artifact_store")
 
 
 def _result_json(output: Optional[dict]) -> Optional[str]:
@@ -326,6 +339,25 @@ def job_finished(row: dict, *, runtime: str, output: Optional[dict] = None) -> b
         ))
     except Exception as exc:  # noqa: BLE001
         _log(f"job_finished skipped: {_safe(exc)}")
+        return False
+
+
+def artifact_put(meta: dict, blob: bytes) -> bool:
+    """Store one job output file (bytea). Never raises; False when the DB is off or fails."""
+    try:
+        timeout = int(os.environ.get("AIMX_DB_ARTIFACT_TIMEOUT_MS", "120000") or "120000")
+        return _execute(_INSERT_ARTIFACT, (
+            str(meta.get("artifact_id") or ""),
+            _str(meta.get("job_id"), 200),
+            _str(meta.get("kind"), 40),
+            _str(meta.get("mime"), 100),
+            _int(meta.get("bytes")),
+            _str(meta.get("sha256"), 64),
+            _str(meta.get("filename"), 300),
+            bytes(blob),
+        ), timeout_ms=timeout)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"artifact_put skipped: {_safe(exc)}")
         return False
 
 

@@ -28,7 +28,6 @@ Layout (the same paths handler.py loads, under AIMX_VOLUME, default /runpod-volu
     ace-step-1.5/             ACE-Step/Ace-Step1.5                 MIT         music
     qwen3.6-35b-a3b-awq/      QuantTrio/Qwen3.6-35B-A3B-AWQ        Apache-2.0  LLM via vLLM
     huggingface/              HF cache used during download
-    outputs/                  job artifacts
 
 Downloads are resumable: re-run the same command after an interruption and
 finished files are kept. A model is "ready" when its marker files exist and no
@@ -106,7 +105,6 @@ def layout(root: Optional[str] = None) -> dict[str, str]:
     paths = {
         "root": base,
         "huggingface": os.path.join(base, "huggingface"),
-        "outputs": os.path.join(base, "outputs"),
     }
     for key, row in MODELS.items():
         paths[key] = os.path.normpath(os.path.join(base, row["dir"]))
@@ -260,7 +258,6 @@ def prefetch(models: Any = None, *, root: Optional[str] = None) -> dict[str, Any
         return {"ok": False, "status": "error", "kind": "prefetch", "text": str(exc), "models": {}}
     paths = layout(root)
     _configure_hf(paths)
-    os.makedirs(paths["outputs"], exist_ok=True)
     need_gb = sum(MODELS[k]["approx_gb"] for k in chosen if not is_ready(k, paths[k]))
     free_gb = _free_gb(paths["root"])
     if free_gb >= 0 and need_gb and free_gb < need_gb + 5:

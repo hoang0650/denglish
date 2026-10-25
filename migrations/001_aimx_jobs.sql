@@ -38,3 +38,18 @@ CREATE TABLE IF NOT EXISTS aimx_volume_status (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (volume, model_key)
 );
+
+-- Job output files. Outputs live only here and in Redis, never on the RunPod volume.
+CREATE TABLE IF NOT EXISTS aimx_job_artifacts (
+    id          TEXT PRIMARY KEY,
+    job_id      TEXT,
+    kind        TEXT,
+    mime        TEXT,
+    bytes       BIGINT,
+    sha256      TEXT,
+    filename    TEXT,
+    data        BYTEA NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS aimx_job_artifacts_job_idx ON aimx_job_artifacts (job_id);

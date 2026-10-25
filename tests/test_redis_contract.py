@@ -68,11 +68,11 @@ def test_lease_and_finish_rows(fake):
     assert fake.ttl[f"{P}:aimx:job:j1"] == 7 * 24 * 3600
     assert "j1" in fake.smembers(f"{P}:aimx:running")
     out = pod_pull.finish(row["id"], status="succeeded", gpu_seconds=2.5,
-                          output={"artifact_url": "/runpod-volume/outputs/a.wav", "model": "m", "license": "MIT",
+                          output={"artifact_url": "aimx-artifact://a1", "artifact_id": "a1", "model": "m", "license": "MIT",
                                   "text": "xin chào", "ignored": "x"})
     stored = json.loads(fake.get(f"{P}:aimx:job:j1"))
     assert stored["status"] == "succeeded" and stored["gpu_seconds"] == 2.5
-    assert stored["artifact_url"].endswith("a.wav") and stored["license"] == "MIT"
+    assert stored["artifact_url"] == "aimx-artifact://a1" and stored["artifact_id"] == "a1" and stored["license"] == "MIT"
     assert "payload" not in stored and "ignored" not in stored
     assert stored["text"] == "xin chào"
     assert "j1" not in fake.smembers(f"{P}:aimx:running")

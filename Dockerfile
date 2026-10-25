@@ -39,7 +39,9 @@ RUN if [ "$AIMX_GPU_DEPS" = "1" ]; then \
 COPY catalog.py db.py media.py handler.py pod_pull.py http_server.py prefetch_volume.py ./
 COPY migrations ./migrations
 COPY scripts ./scripts
-RUN mkdir -p /runpod-volume/huggingface /runpod-volume/outputs
+COPY artifacts.py ./
+# The volume is for model weights/caches only; job files use /tmp/aimx-jobs.
+RUN mkdir -p /runpod-volume/huggingface /tmp/aimx-jobs
 # handler.py calls runpod.serverless.start({"handler": handler, ...}).
 # The entrypoint only adds the optional Tailscale forwards in front of it.
 CMD ["bash", "/app/scripts/entrypoint.sh"]

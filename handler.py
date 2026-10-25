@@ -25,11 +25,15 @@ import uuid
 from collections import OrderedDict
 from typing import Any
 
+import artifacts
 import catalog
 import db
 import media
 
 VOLUME = catalog.VOLUME
+# The volume holds model weights/caches only. Job inputs and outputs use local
+# scratch (artifacts.scratch_dir) and are persisted to Postgres + Redis.
+artifacts.guard_tempdir()
 # Hub-cache models (neucodec, w2v-bert) live under the volume too.
 os.environ.setdefault("HF_HOME", f"{VOLUME}/huggingface")
 
@@ -289,10 +293,10 @@ def _dtype():
 
 # ---------------------------------------------------------------- execution
 
-def _run(task: str, row: dict, payload: dict) -> dict:
+def _run(task: str, row: dict, payload: dict, job_id: str = "") -> dict:
     started = time.perf_counter()
     try:
-        out = _infer(task, row, payload)
+        out = artifacts.collect(_infer(task, row, payload), job_id=job_id, kind=task)
     except ImportError as exc:
         return {
             "status": "failed",
@@ -303,6 +307,8 @@ def _run(task: str, row: dict, payload: dict) -> dict:
         return {"status": "failed", "model": row["id"], "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
         return {"status": "failed", "model": row["id"], "error": str(exc)[:500]}
+    finally:
+        artifacts.cleanup()
     body = {
         "status": "succeeded",
         "model": row["id"],
@@ -314,8 +320,8 @@ def _run(task: str, row: dict, payload: dict) -> dict:
 
 
 def _out(name: str, ext: str) -> str:
-    os.makedirs(f"{VOLUME}/outputs", exist_ok=True)
-    return f"{VOLUME}/outputs/{name}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}.{ext}"
+    """Local scratch path for a job output. Never on the model volume."""
+    return artifacts.new_path(name, ext)
 
 
 def _infer(task: str, row: dict, payload: dict) -> dict:
@@ -800,7 +806,7 @@ def _prefetch(payload: dict) -> dict:
     return result
 
 
-def execute(kind: str, payload: dict | None) -> dict:
+def execute(kind: str, payload: dict | None, job_id: str = "") -> dict:
     body = payload if isinstance(payload, dict) else {}
     action = str(kind or body.get("action") or body.get("kind") or "").strip().lower()
     if action in BLOCKED_ACTIONS:
@@ -824,7 +830,7 @@ def execute(kind: str, payload: dict | None) -> dict:
         return _sandbox_ok(task, row)
     if task not in _SIDECAR_TASKS and not _ready(row["volume"]):
         return {"status": "failed", "model": row["id"], "error": f"model not on volume: {row['volume']}"}
-    return _run(task, row, body)
+    return _run(task, row, body, job_id=job_id)
 
 
 def run_job(kind: str, payload: dict | None, meta: dict | None = None) -> dict:
@@ -845,7 +851,7 @@ def run_job(kind: str, payload: dict | None, meta: dict | None = None) -> dict:
     if recording:
         db.job_started(job, runtime=_runtime())
     try:
-        result = execute(kind, body)
+        result = execute(kind, body, job_id=job["id"])
     except Exception as exc:  # noqa: BLE001
         result = {"status": "failed", "error": str(exc)[:500]}
     if recording:
