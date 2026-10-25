@@ -186,3 +186,12 @@ def test_deep_health_reports_store_checks(monkeypatch):
     body = handler.handler({"input": {"action": "health", "deep": True}})
     assert body["checks"]["postgres"]["ok"] is False and body["checks"]["redis"]["ok"] is False
     assert "checks" not in handler.handler({"input": {"action": "health"}})
+
+
+def test_chatterbox_style_clamps_and_ignores_junk():
+    import handler
+    assert handler.chatterbox_style(None) == {}
+    assert handler.chatterbox_style({"cfg_weight": 0}) == {"cfg_weight": 0.0}
+    got = handler.chatterbox_style({"cfg_weight": "5", "exaggeration": -1, "temperature": "abc"})
+    assert got == {"cfg_weight": 1.0, "exaggeration": 0.25}
+    assert handler.chatterbox_style({"cfg_weight": True, "exaggeration": float("nan")}) == {}
