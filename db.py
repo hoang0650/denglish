@@ -342,6 +342,25 @@ def job_finished(row: dict, *, runtime: str, output: Optional[dict] = None) -> b
         return False
 
 
+def check() -> dict:
+    """Round trip for health checks: SELECT 1 and read aimx_volume_status. Never raises."""
+    if not enabled():
+        return {"ok": False, "error": "disabled"}
+    with _lock:
+        conn = _get()
+        if conn is None:
+            return {"ok": False, "error": "unreachable"}
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.execute("SELECT count(*) FROM aimx_volume_status")
+                row = cur.fetchone() if hasattr(cur, "fetchone") else None
+            return {"ok": True, "volume_status_rows": int(row[0]) if row else None}
+        except Exception as exc:  # noqa: BLE001
+            _drop()
+            return {"ok": False, "error": _safe(exc)[:200]}
+
+
 def artifact_put(meta: dict, blob: bytes) -> bool:
     """Store one job output file (bytea). Never raises; False when the DB is off or fails."""
     try:

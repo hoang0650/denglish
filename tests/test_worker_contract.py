@@ -178,3 +178,11 @@ def test_image_pin_and_ignore_env():
         name, _, value = line.partition("=")
         assert name not in {"REDIS_URL", "DATABASE_URL", "AIMX_DATABASE_URL", "HF_TOKEN", "AIMX_HTTP_TOKEN",
                             "AIMX_VLLM_API_KEY"} or value == "", f"{name} must not carry a value"
+
+
+def test_deep_health_reports_store_checks(monkeypatch):
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("AIMX_REDIS_URL", raising=False)
+    body = handler.handler({"input": {"action": "health", "deep": True}})
+    assert body["checks"]["postgres"]["ok"] is False and body["checks"]["redis"]["ok"] is False
+    assert "checks" not in handler.handler({"input": {"action": "health"}})

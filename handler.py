@@ -178,7 +178,18 @@ def model_for(task: str, override: str = "", payload: dict | None = None) -> dic
     raise ValueError(f"no commercial model for {task}")
 
 
-def health_body() -> dict:
+def _redis_check() -> dict:
+    if not (os.environ.get("AIMX_REDIS_URL") or os.environ.get("REDIS_URL")):
+        return {"ok": False, "error": "not configured"}
+    import pod_pull
+
+    try:
+        return {"ok": bool(pod_pull._redis().ping()), "prefix": pod_pull.prefix()}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": type(exc).__name__}
+
+
+def health_body(deep: bool = False) -> dict:
     models = []
     for row in COMMERCIAL_MODELS.values():
         models.append({
@@ -198,6 +209,7 @@ def health_body() -> dict:
         "models": models,
         "blocked": sorted(BLOCKED_MODELS),
         "db": db.enabled(),
+        **({"checks": {"postgres": db.check(), "redis": _redis_check()}} if deep else {}),
     }
 
 
@@ -871,7 +883,7 @@ def handler(event: dict | None) -> dict:
         incoming = {}
     action = str(incoming.get("action") or incoming.get("kind") or "health")
     if action == "health":
-        return health_body()
+        return health_body(deep=bool(incoming.get("deep")))
     return run_job(action, incoming, {"id": event.get("id") or incoming.get("job_id"), "backend": "serverless"})
 
 
