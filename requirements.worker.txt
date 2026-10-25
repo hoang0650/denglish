@@ -1,0 +1,9 @@
+# CPU-side deps for every runtime (serverless, pod puller, http). Install with
+#   pip install -c constraints-torch.txt -r requirements.worker.txt
+runpod>=1.7
+redis>=5.0
+psycopg[binary]>=3.2
+huggingface_hub>=0.34
+hf_xet
+Pillow
+numpy

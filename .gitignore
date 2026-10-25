@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+wandb/
+weights/
+*.gguf
+*.pt
+*.safetensors
+.pytest_cache/
+outputs/
+*.bak-*

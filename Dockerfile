@@ -1,28 +1,31 @@
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+# AIMX_GPU_DEPS=0 builds a small CPU-only image (puller / prefetch only).
+ARG AIMX_GPU_DEPS=1
 ENV PYTHONUNBUFFERED=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PIP_ROOT_USER_ACTION=ignore \
-    VIENEU_MODEL=pnnbao-ump/VieNeu-TTS-v3-Turbo \
-    VIENEU_MODEL_DIR=/runpod-volume/vieneu-tts-v3-turbo \
-    PHOWHISPER_MODEL=vinai/PhoWhisper-large \
-    PHOWHISPER_MODEL_DIR=/runpod-volume/phowhisper-large \
-    HF_HOME=/runpod-volume/huggingface
-RUN apt-get update && apt-get install -y ffmpeg git tesseract-ocr libtesseract-dev tesseract-ocr-eng tesseract-ocr-deu && rm -rf /var/lib/apt/lists/*
+    HF_HOME=/runpod-volume/huggingface \
+    HF_XET_HIGH_PERFORMANCE=1 \
+    AIMX_RUNTIME=serverless \
+    AIMX_VOLUME=/runpod-volume
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg libsndfile1 \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY requirements.txt .
-# Debian may ship python3-cryptography without a pip RECORD. --ignore-installed
-# still installs packages (incl. vieneu); it only skips the broken uninstall step.
+COPY requirements.worker.txt requirements.gpu.txt requirements.tts.txt constraints-torch.txt ./
+# Pin CUDA torch first; every later install runs with -c constraints-torch.txt.
 RUN pip install --no-cache-dir -U pip \
- && pip install --no-cache-dir --ignore-installed cryptography \
- && pip install --no-cache-dir --ignore-installed -r requirements.txt \
- && python -c "import vieneu; print('[build] vieneu', getattr(vieneu, '__version__', 'ok'))"
-COPY handler.py tts_vieneu.py stt_phowhisper.py voice_assistant.py config.yaml .
-RUN python -c "import tts_vieneu; assert len(tts_vieneu.PRESET_VOICES) == 20; print('[build] tts_vieneu', tts_vieneu.MODEL_ID)"
-RUN python -c "import stt_phowhisper; assert stt_phowhisper.MODEL_ID == 'vinai/PhoWhisper-large'; print('[build] stt_phowhisper', stt_phowhisper.MODEL_ID)"
-RUN mkdir -p \
-      /runpod-volume/llama3-base \
-      /runpod-volume/denglish-model \
-      /runpod-volume/vieneu-tts-v3-turbo \
-      /runpod-volume/phowhisper-large \
-      /runpod-volume/huggingface
+ && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 \
+      torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 \
+ && pip install --no-cache-dir -c constraints-torch.txt -r requirements.worker.txt
+RUN if [ "$AIMX_GPU_DEPS" = "1" ]; then \
+      pip install --no-cache-dir -c constraints-torch.txt -r requirements.gpu.txt \
+   && pip install --no-cache-dir -c constraints-torch.txt -r requirements.tts.txt \
+   && pip install --no-cache-dir --no-deps chatterbox-tts==0.1.7 vieneu==3.8.3 neucodec==0.0.6 \
+   && python -c "import torch; assert torch.__version__.startswith('2.8.0'), torch.__version__" ; \
+    fi
+COPY catalog.py db.py media.py handler.py pod_pull.py http_server.py prefetch_volume.py ./
+COPY migrations ./migrations
+COPY scripts ./scripts
+RUN mkdir -p /runpod-volume/huggingface /runpod-volume/outputs
 CMD ["python", "-u", "handler.py"]

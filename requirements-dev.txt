@@ -1,0 +1,5 @@
+# Unit tests only (no GPU, no network).
+pytest>=8
+redis>=5.0
+psycopg[binary]>=3.2
+huggingface_hub>=0.34

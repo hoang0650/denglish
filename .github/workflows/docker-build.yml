@@ -5,14 +5,27 @@ on:
     branches:
       - master
       - main
-  workflow_dispatch: 
+  pull_request:
+  workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
   build-and-push:
-    runs-on: ubuntu-latest 
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
 
     steps:
-      - name: 0. Giải phóng dung lượng máy chủ GitHub (QUAN TRỌNG)
+      - name: Free GitHub runner disk
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: false
@@ -23,21 +36,21 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - name: 1. Lấy code từ repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 2. Cài đặt công cụ Docker
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 3. Đăng nhập Docker Hub
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: 4. Build và đẩy Image v5
+      - name: Build and push AIMX worker
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/denglish-ai-worker:v2
+          tags: ${{ secrets.DOCKER_USERNAME }}/aimx-runpod-worker:sha-${{ github.sha }}

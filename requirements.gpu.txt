@@ -1,0 +1,19 @@
+# Model runtimes. Always install with the torch pin:
+#   pip install -c constraints-torch.txt -r requirements.gpu.txt
+# Then the two --no-deps packages (their own pins would replace torch 2.8):
+#   pip install -c constraints-torch.txt -r requirements.tts.txt
+#   pip install --no-deps chatterbox-tts==0.1.7 vieneu==3.8.3 neucodec==0.0.6
+diffusers>=0.36
+transformers>=5.0
+accelerate
+safetensors
+sentencepiece
+ftfy
+sentence-transformers>=5.0
+librosa>=0.11
+soundfile
+imageio
+imageio-ffmpeg
+einops
+kornia
+timm

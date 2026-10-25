@@ -1,218 +1,148 @@
-# AI English-German Tutor with Voice & Vietnamese Support
+# AI Markets RunPod worker (`aimx-runpod-worker`)
 
-`handler.py` is the **RunPod Serverless / Public Endpoint worker** (GPU). AI Markets AI (`denglish-api` at `ai.aimarkets.vn`) does **not** load this model — it calls your hosted endpoint:
+GPU worker for **ai.aimarkets.vn**. One image, three runtimes:
 
-```text
-aimarkets.vn → api.aimarkets.vn → ai.aimarkets.vn
-  → POST https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync
-    Authorization: Bearer {RUNPOD_API_KEY}
-    {"input": {"text"|"prompt": "...", "action": "chat"|"agent_turn", "tts": false}}
-```
+| `AIMX_RUNTIME` | What it does |
+|---|---|
+| `serverless` (default) | RunPod Serverless handler (`handler.py`) |
+| `pod` | Pulls jobs from the marketplace Redis queue (`pod_pull.py`) |
+| `http` | Small HTTP API on `PORT` (`http_server.py`) |
 
-## Host on RunPod
+The old Denglish tutor (Llama-3-70B LoRA, PhoWhisper, `voice_assistant.py`, `train.py`) is **not** in the image.
 
-1. Build/push the Docker image (`Dockerfile` → `python -u handler.py`).
-2. Network volume layout (download once, every serverless worker reuses):
-   - `/runpod-volume/llama3-base` — base LLM
-   - `/runpod-volume/denglish-model` — LoRA
-   - `/runpod-volume/vieneu-tts-v3-turbo` — `pnnbao-ump/VieNeu-TTS-v3-Turbo`
-   - `/runpod-volume/huggingface` — HF hub cache
-3. Bootstrap TTS onto the volume (pod shell or one-shot):
-   `python voice_assistant.py --ensure-tts`
-   Serverless `handler.py` also calls `ensure_model` on boot (`VIENEU_DOWNLOAD=0` to skip).
-4. Create a **Serverless endpoint**, attach this image + GPU + volume. Copy the endpoint id.
-5. On **ai.aimarkets.vn** set `RUNPOD_API_KEY` and `RUNPOD_ENDPOINT_ID` (that id). Do not put the key in the web/app.
+---
 
-Job input (also `prompt` / OpenAI `messages` — the API maps them to `text` before calling you):
+## Tiếng Việt
 
-```json
-{ "input": { "text": "Hello", "action": "chat", "lang": "en", "tts": false } }
-```
+### Mô hình (chỉ giấy phép dùng thương mại)
 
-TTS/audio uses **VieNeu-TTS-v3-Turbo** (`pnnbao-ump/VieNeu-TTS-v3-Turbo`): 20 preset voices or clone from a 3–8s sample (`ref_audio` / `audio_url`).
+| Key | Hugging Face | Giấy phép | Việc | Mặc định | ~GB |
+|---|---|---|---|---|---|
+| `vieneu-tts` | `pnnbao-ump/VieNeu-TTS` (0.5B) | Apache-2.0 | TTS tiếng Việt + clone giọng | ✅ | 2 |
+| `vieneu-tts-0.3b` | `pnnbao-ump/VieNeu-TTS-0.3B` | Apache-2.0 | TTS tiếng Việt nhanh (~2x) | ✅ | 1 |
+| `neucodec` | `neuphonic/neucodec` | Apache-2.0 | codec của VieNeu (cần `HF_TOKEN`) | ✅ | 2 |
+| `w2v-bert-2.0` | `facebook/w2v-bert-2.0` | MIT | encoder cho neucodec | ✅ | 3 |
+| `chatterbox` | `ResembleAI/chatterbox` | MIT | TTS 23 ngôn ngữ khác (không có tiếng Việt) | ✅ | 14 |
+| `z-image-turbo` | `Tongyi-MAI/Z-Image-Turbo` | Apache-2.0 | ảnh | ✅ | 33 |
+| `flux-schnell` | `black-forest-labs/FLUX.1-schnell` | Apache-2.0 | ảnh (gated, cần `HF_TOKEN`) | tuỳ chọn | 34 |
+| `wan2.2-ti2v-5b` | `Wan-AI/Wan2.2-TI2V-5B-Diffusers` | Apache-2.0 | video (fast/talking/film) | ✅ | 34 |
+| `cogvideox-2b` | `THUDM/CogVideoX-2b` | Apache-2.0 | video | tuỳ chọn | 14 |
+| `birefnet` | `ZhengPeng7/BiRefNet` | MIT | tách nền | ✅ | 1 |
+| `whisper-large-v3-turbo` | `openai/whisper-large-v3-turbo` | MIT | nhận dạng giọng nói | ✅ | 2 |
+| `paddleocr-vl-1.5` | `PaddlePaddle/PaddleOCR-VL-1.5` | Apache-2.0 | OCR | ✅ | 2 |
+| `vn-embedding` | `AITeamVN/Vietnamese_Embedding` | Apache-2.0 | embedding | ✅ | 3 |
+| `vn-reranker` | `AITeamVN/Vietnamese_Reranker` | Apache-2.0 | rerank | ✅ | 3 |
+| `ace-step-1.5` | `ACE-Step/Ace-Step1.5` | MIT | nhạc (sidecar, **chưa nối xong**) | ✅ | 11 |
+| `qwen3.6-35b-a3b-awq` | `QuantTrio/Qwen3.6-35B-A3B-AWQ` | Apache-2.0 | LLM qua vLLM | ✅ | 26 |
 
-```json
-{ "input": { "action": "tts", "text": "Xin chào", "voice": "Ngọc Huyền" } }
-{ "input": { "action": "tts", "text": "Xin chào", "audio_url": "https://…/sample.mp3" } }
-{ "input": { "action": "list_voices" } }
-```
+Mặc định ≈137 GB, tất cả ≈185 GB → network volume **200 GB**. GPU mục tiêu: 1× 48 GB (A40 / RTX A6000).
 
-## 1. Cấu trúc dự án
-```
-./
-├── data_preparation.py
-├── train.py
-├── voice_assistant.py
-├── upload_hf.py
-├── requirements.txt
-├── README.md
-├── config.yaml
-├── vn_mix_data.json
-└── system_architecture.md
-```
+**Định tuyến TTS:** `language: "vi"` (hoặc văn bản có dấu tiếng Việt) → VieNeu-TTS; ngôn ngữ khác → Chatterbox.
+Chọn bản nhanh: `"model": "vieneu-0.3b"`. Giọng có sẵn: `Vinh, Binh, Tuyen, Doan, Ly, Ngoc`
+(tên cũ như `ngoc-huyen`, `pham-tuyen` được map tự động). Clone giọng: gửi `ref_audio_url` (chỉ https công khai),
+`ref_audio_base64` hoặc `ref_audio_path` + `ref_text` (nếu thiếu `ref_text` thì dùng Whisper để chép lại).
 
--   `data_preparation.py`: Script tải, xử lý và kết hợp các bộ dữ liệu huấn luyện, bao gồm `yahma/alpaca-cleaned` (tiếng Anh), `philschmid/translated_tasks_de_google_52k` (tiếng Đức), `OpenAssistant/oasst2` (đa ngôn ngữ). Dữ liệu sửa lỗi tiếng Việt được đọc từ `vn_mix_data.json`.
--   `train.py`: Script thực hiện fine-tuning mô hình ngôn ngữ lớn (LLM) sử dụng kỹ thuật QLoRA, tích hợp theo dõi với Weights & Biases (WandB).
--   `voice_assistant.py`: Script triển khai pipeline giao tiếp bằng giọng nói, tích hợp Speech-to-Text (STT) với `faster-whisper`, LLM đã fine-tuned, và Text-to-Speech (TTS) với `edge-tts`.
--   `upload_hf.py`: Script hỗ trợ tải mô hình đã huấn luyện lên HuggingFace Hub.
--   `requirements.txt`: Liệt kê tất cả các thư viện Python cần thiết để chạy dự án.
--   `README.md`: File hướng dẫn này.
--   `system_architecture.md`: Mô tả chi tiết kiến trúc hệ thống và các thành phần được sử dụng.
--   `config.yaml`: File cấu hình chứa các tham số cho mô hình, huấn luyện, WandB, HuggingFace, voice và vision.
+> **Lưu ý giấy phép VieNeu-TTS:** model VieNeu-TTS và VieNeu-TTS-0.3B phát hành theo **Apache-2.0**. Bộ dữ liệu
+> huấn luyện `pnnbao-ump/VieNeu-TTS-1000h` là **CC-BY-NC-4.0**. Chủ dự án đã xem xét và chấp nhận dùng VieNeu
+> dựa trên giấy phép Apache-2.0 của model (quyết định ngày 25/10/2026).
 
-## 2. Hướng dẫn cài đặt
+Bị chặn: `meta-llama/Meta-Llama-3-70B*`, `black-forest-labs/FLUX.1-dev` (phi thương mại), các tên `llama`, `denglish`, `lora`, `phowhisper`, `flux-dev`.
 
-Để cài đặt các thư viện cần thiết, bạn có thể sử dụng `pip` với file `requirements.txt`:
+### Tải model lên volume
 
 ```bash
-nvidia-smi
-pip install -r requirements.txt
-pip install flash-attn --no-build-isolation
+python prefetch_volume.py --list                 # bố cục, dung lượng, đã có / còn thiếu
+python prefetch_volume.py                        # tải tất cả model mặc định (tiếp tục được nếu bị ngắt)
+python prefetch_volume.py --models vieneu,vieneu-0.3b,neucodec,w2v-bert-2.0
+python prefetch_volume.py --models all --json
 ```
 
-**Lưu ý**: Một số thư viện như `torch` có thể yêu cầu cài đặt cụ thể tùy thuộc vào cấu hình GPU của bạn. Vui lòng tham khảo tài liệu chính thức của PyTorch để biết thêm chi tiết.
+`HF_TOKEN` chỉ cần cho repo gated (`flux-schnell`, `neucodec`; vào trang model trên huggingface.co bấm chấp nhận điều khoản trước). Token không bao giờ được in ra. Hoặc gửi job `{"action": "prefetch", "models": [...]}`.
 
-## 3. Cấu hình dự án
+### Redis (hàng đợi) và Postgres (lịch sử job)
 
-### 3.1. File `config.yaml`
+* `REDIS_URL` (`redis://` hoặc `rediss://` cho TLS), `REDIS_KEY_PREFIX=aimarkets` – giống hệt `ai-marketplace-ai`
+  (`aimarkets:aimx:q:paid|free`, `aimarkets:aimx:job:<id>`, `aimarkets:aimx:running`).
+* `AIMX_DATABASE_URL` (hoặc `DATABASE_URL`), ví dụ `postgresql://aimx_worker:<mật khẩu>@<host>:5432/aimx_worker?sslmode=require`.
+  Worker tự tạo bảng `aimx_jobs`, `aimx_volume_status` (`CREATE TABLE IF NOT EXISTS`). Postgres lỗi thì job vẫn chạy.
+* Redis/Postgres trên VPS hiện **không** mở ra internet. Xem phần "Connecting from RunPod" bên dưới.
 
-Chỉnh sửa file `config.yaml` để cấu hình các tham số của dự án. Đặc biệt chú ý đến các phần sau:
-
--   `wandb.entity`: Thay thế `"your_wandb_entity"` bằng entity của bạn trên Weights & Biases.
--   `huggingface.repo_name`: Thay thế `"your-username/english-german-tutor-lora"` bằng username và tên repository mong muốn của bạn trên HuggingFace.
-
-### 3.2. Biến môi trường (Environment Variables)
-
-Để bảo mật các thông tin nhạy cảm, dự án sử dụng biến môi trường cho HuggingFace Token và WandB API Key. Bạn cần thiết lập các biến này trước khi chạy các script liên quan:
-
--   **`HF_TOKEN`**: HuggingFace API Token của bạn (có quyền ghi nếu bạn muốn upload model).
--   **`WANDB_API_KEY`**: API Key của bạn trên Weights & Biases.
-
-Bạn có thể thiết lập chúng trong terminal như sau:
+### Chạy test
 
 ```bash
-export HF_TOKEN="hf_YOUR_HUGGINGFACE_TOKEN"
-export WANDB_API_KEY="YOUR_WANDB_API_KEY"
+python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # Windows: .venv\Scripts\pip
+python -m pytest -q
+# tuỳ chọn: AIMX_TEST_REDIS_URL=redis://127.0.0.1:6379/15 AIMX_TEST_DATABASE_URL=postgresql://... python -m pytest -q
 ```
 
-Hoặc thêm vào file `.bashrc`, `.zshrc` hoặc `.profile` để chúng được tải tự động mỗi khi bạn mở terminal mới.
+---
 
-## 4. Quy trình thực hiện thủ công
+## English
 
-Thực hiện các bước sau theo thứ tự để xây dựng và chạy mô hình gia sư AI:
+### Jobs
 
-### Bước 1: Chuẩn bị dữ liệu
+`action` (serverless `input.action`, HTTP path, or queue `kind`):
 
-Chạy script `data_preparation.py` để tải về, xử lý và kết hợp các bộ dữ liệu. Script này sẽ đọc dữ liệu sửa lỗi tiếng Việt từ `vn_mix_data.json` (nếu tồn tại) và tạo ra một thư mục `processed_dataset` chứa dữ liệu đã chuẩn bị.
+| action | HTTP | model |
+|---|---|---|
+| `tts`, `clone` | `/v1/tts` | VieNeu-TTS for Vietnamese, Chatterbox otherwise |
+| `image` | `/v1/image` | Z-Image-Turbo (`"model": "flux"` for FLUX.1-schnell) |
+| `fast`, `talking`, `film` | `/v1/video/fast`, `/v1/video/talking`, `/v1/film` | Wan2.2-TI2V-5B (`"model": "cogvideox"`) |
+| `bg_remove` | `/v1/bg_remove`, `/v1/image/remove-bg` | BiRefNet |
+| `stt` | `/v1/stt` | Whisper large-v3-turbo |
+| `ocr` | `/v1/ocr` | PaddleOCR-VL-1.5 |
+| `embed` / `rerank` | `/v1/embed`, `/v1/rerank` | AITeamVN embedding / reranker |
+| `llm` | `/v1/llm` | Qwen3.6-35B-A3B-AWQ via the vLLM sidecar (`scripts/start_vllm.sh`) |
+| `music` | `/v1/music` | ACE-Step 1.5 — **stub**: forwards to `AIMX_ACESTEP_URL` only |
+| `train` | `/v1/train` | hand-off (ACT / Diffusion policy) |
+| `prefetch`, `volume_status` | `/v1/prefetch` | volume management |
 
-```bash
-python data_preparation.py
-```
+Tutor actions (`chat`, `agent_turn`, `generate_test`, `grade_test`) are rejected.
+Media inputs accept `<name>_base64`, `<name>_url` (public https only; private, loopback, metadata hosts,
+credentials in URLs and redirects to internal hosts are refused) or `<name>_path` (must be on the volume).
 
-### Bước 2: Huấn luyện mô hình (Fine-tuning)
+**VieNeu-TTS license note:** the VieNeu-TTS and VieNeu-TTS-0.3B model weights are **Apache-2.0**. The training
+dataset `pnnbao-ump/VieNeu-TTS-1000h` is **CC-BY-NC-4.0**; the owner reviewed this and accepted shipping VieNeu
+on the basis of the model's Apache-2.0 license (decision of 2026-10-25).
 
-Chạy script `train.py` để fine-tune mô hình LLM. Quá trình này yêu cầu GPU với VRAM đủ lớn (khuyến nghị > 12GB cho Llama-3-8B QLoRA). Mô hình đã huấn luyện sẽ được lưu vào thư mục `./tutor_model_output`. Quá trình huấn luyện sẽ được theo dõi trên WandB.
+### Status
 
-```bash
-python train.py
-```
+Implemented, unit-tested without a GPU (fake engines), **not yet run on a GPU**: tts (VieNeu + Chatterbox),
+image, video, bg_remove, stt, ocr, embed, rerank, llm proxy. `music` is a stub until the ACE-Step API sidecar
+is deployed. Prefetch was exercised for real against Hugging Face (VieNeu-TTS-0.3B, BiRefNet).
 
-### Bước 3: Chạy trợ lý giọng nói (Voice & Vision)
+### Image
 
-Script `voice_assistant.py` sẽ triển khai pipeline giao tiếp bằng giọng nói và xử lý hình ảnh. Bạn có thể cung cấp một file audio đầu vào (ví dụ: `user_speech.wav`) và/hoặc một file hình ảnh (ví dụ: `grammar_exercise.png`) để kiểm tra chức năng này. Mô hình sẽ chuyển đổi giọng nói thành văn bản, trích xuất văn bản từ hình ảnh (nếu có), xử lý bằng LLM và phản hồi bằng giọng nói.
+`Dockerfile` keeps `torch==2.8.0` / `torchaudio==2.8.0` / `torchvision==0.23.0` from the cu128 index and
+installs everything else with `-c constraints-torch.txt`. `chatterbox-tts`, `vieneu` and `neucodec` are
+installed with `--no-deps` because their own pins would replace torch; their runtime deps are listed in
+`requirements.tts.txt`. Build a CPU-only puller image with `--build-arg AIMX_GPU_DEPS=0`.
+vLLM pins a newer torch, so it runs from its own venv on the volume (see `scripts/start_vllm.sh`).
+CI tags `<DOCKER_USERNAME>/aimx-runpod-worker:sha-<commit>` on pushes to master/main after the tests pass.
 
-**Để sử dụng tính năng Vision (OCR):**
+### Environment
 
-1.  **Cài đặt Tesseract OCR**: Bạn cần cài đặt Tesseract OCR trên hệ thống của mình. Ví dụ trên Ubuntu:
-    ```bash
-    sudo apt update
-    sudo apt install tesseract-ocr
-    sudo apt install tesseract-ocr-eng tesseract-ocr-deu tesseract-ocr-vie
-    ```
-    Đối với các hệ điều hành khác, vui lòng tham khảo hướng dẫn cài đặt Tesseract OCR chính thức.
-2.  **Cấu hình `config.yaml`**: Đảm bảo `vision.ocr_enabled` được đặt là `True` và `vision.ocr_lang` chứa các ngôn ngữ bạn muốn nhận diện (ví dụ: `eng+deu+vie`).
-3.  **Đặt file hình ảnh**: Đặt file hình ảnh bạn muốn AI phân tích (ví dụ: `grammar_exercise.png`) vào cùng thư mục với script `voice_assistant.py` hoặc chỉnh sửa đường dẫn trong script.
+See `.env.example` (names only). The important ones:
 
-``python voice_assistant.py
-```
+* `AIMX_RUNTIME`, `AIMX_VOLUME`, `HF_HOME`, `HF_TOKEN` (gated repos only)
+* `REDIS_URL`, `REDIS_KEY_PREFIX=aimarkets`, `REDIS_TLS_CA_FILE`
+* `AIMX_DATABASE_URL` / `DATABASE_URL`, `AIMX_DB_SSLMODE`
+* `AIMX_HTTP_TOKEN` (HTTP mode bearer token), `AIMX_VLLM_*`, `AIMX_ACESTEP_URL`
+* `AIMX_VIENEU_DEFAULT` (`vieneu-tts` or `vieneu-tts-0.3b`), `AIMX_VIENEU_VOICE`, `AIMX_TTS_DEFAULT_LANG`
 
-**Lưu ý**: Hiện tại, script này chỉ là một ví dụ đơn giản. Để có một ứng dụng tương tác thực tế, bạn sẽ cần tích hợp nó với một giao diện người dùng (UI) hoặc một hệ thống xử lý audio/hình ảnh thời gian thực.## Bước 4: Tải mô hình lên HuggingFace Hub
+### Connecting from RunPod to Redis / Postgres on the VPS
 
-Sau khi huấn luyện xong, bạn có thể tải mô hình lên HuggingFace Hub bằng cách chạy script `upload_hf.py`. Đảm bảo biến môi trường `HF_TOKEN` đã được thiết lập.
+RunPod workers have changing IPs, so allow-listing IPs does not work. Two options:
 
-```bash
-python upload_hf.py
-```
+1. **Preferred – private tunnel (Tailscale or WireGuard).** Put the VPS and the pod on one tailnet and use
+   the tailnet address in `REDIS_URL` / `AIMX_DATABASE_URL`. Nothing is published to the internet.
+2. **TLS endpoints with strong, least-privilege credentials.** Publish Redis and Postgres through Traefik TCP
+   routers with TLS (`HostSNI`), then:
+   * Postgres: role `aimx_worker` (LOGIN, no superuser) owning database `aimx_worker`, `ssl=on`, `hostssl`
+     rules only; worker uses `sslmode=require` (or `verify-full`).
+   * Redis: ACL user restricted to `~aimarkets:aimx:*` and the commands the puller needs
+     (`get set zrevrange zrem sadd srem smembers ping`), `rediss://` from the worker.
 
-## 5. Quy trình tự động hóa với `setup_and_train.sh`
-
-Để đơn giản hóa quá trình cài đặt và huấn luyện, bạn có thể sử dụng script `setup_and_train.sh`. Script này sẽ tự động thực hiện các bước sau:
-
-1.  Cài đặt tất cả các thư viện từ `requirements.txt`.
-2.  Kiểm tra các biến môi trường `HF_TOKEN` và `WANDB_API_KEY`.
-3.  Chuẩn bị dữ liệu huấn luyện bằng cách chạy `data_preparation.py`.
-4.  Bắt đầu quá trình huấn luyện mô hình bằng cách chạy `train.py`.
-5.  Nếu `HF_TOKEN` được thiết lập, script sẽ tự động upload mô hình đã huấn luyện lên HuggingFace Hub bằng cách chạy `upload_hf.py`.
-
-**Cách sử dụng:**
-
-Trước khi chạy, đảm bảo bạn đã cấp quyền thực thi cho script:
-
-```bash
-chmod +x setup_and_train.sh
-```
-
-Sau đó, bạn có thể chạy script:
-
-```bash
-./setup_and_train.sh
-```
-
-**Lưu ý quan trọng**: Đảm bảo rằng các biến môi trường `HF_TOKEN` và `WANDB_API_KEY` đã được thiết lập trong môi trường shell của bạn trước khi chạy script này để quá trình upload và theo dõi WandB diễn ra thành công.
-
-## 6. Giải pháp cho vấn đề Network Volume
-`python3 -m pip install -U huggingface_hub"`
-
-Sau đó chạy lệnh bên dưới vào terminal của RunPod:
-
-```python
-python3 -c "
-from huggingface_hub import snapshot_download
-import os
-
-# THAY TOKEN CỦA BẠN VÀO ĐÂY
-os.environ['HF_TOKEN'] = 'TOKEN_CỦA_BẠN_Ở_ĐÂY'
-
-# Tải Base Model về /workspace (nơi có Network Volume 140GB)
-print('🚀 Đang tải Base Model với Token xác thực...')
-snapshot_download(
-    repo_id='unsloth/llama-3-8b-Instruct-bnb-4bit',
-    local_dir='/workspace/llama3-base',
-    local_dir_use_symlinks=False,
-    token=os.environ['HF_TOKEN']
-)
-
-# Tải LoRA Model
-print('🚀 Đang tải LoRA Model...')
-snapshot_download(
-    repo_id='phgrouptechs/Denglish-8B-Instruct',
-    local_dir='/workspace/denglish-model',
-    local_dir_use_symlinks=False,
-    token=os.environ['HF_TOKEN']
-)
-print('✅ Hoàn thành! Kiểm tra file config.json tại /workspace/llama3-base')
-"
-```
-Kiểm tra lại xem đã mount vô ổ đĩa hay chưa bằng lệnh `ls -lh /workspace/llama3-base/config.json`. Nếu thấy `-rw-rw-rw- 1 root root 1.3K Mar 10 02:36 /workspace/llama3-base/config.json`, thì đã mount thành công. 
-
-## 6. Điểm nổi bật của dự án
-
--   **Học tập đa ngôn ngữ**: Mô hình được thiết kế để hỗ trợ người dùng học cả tiếng Anh và tiếng Đức một cách hiệu quả.
--   **Phản hồi thông minh**: Sử dụng LLM để cung cấp các phản hồi ngữ cảnh, giúp người học hiểu sâu hơn về ngôn ngữ.
--   **Hỗ trợ tiếng Việt**: Một tính năng độc đáo là khả năng tự động phát hiện lỗi ngữ pháp hoặc phát âm trong tiếng Anh/Đức và giải thích, sửa lỗi bằng tiếng Việt, giúp người học Việt Nam dễ dàng tiếp thu.
--   **Giao tiếp tự nhiên**: Tích hợp công nghệ Speech-to-Text và Text-to-Speech hiện đại để tạo ra trải nghiệm giao tiếp mượt mà và tự nhiên.
--   **Theo dõi huấn luyện với WandB**: Giúp bạn dễ dàng theo dõi, phân tích và tối ưu hóa quá trình huấn luyện mô hình.
-
-## 7. Kiến trúc hệ thống
-
-Để hiểu rõ hơn về cách các thành phần hoạt động cùng nhau, vui lòng tham khảo file `system_architecture.md`.
+The marketplace must add the new kinds (`bg_remove`, `stt`, `ocr`, `embed`, `rerank`, `music`, `llm`) to
+`providers/aimx_models.py` before enqueuing them for pod mode; serverless/HTTP accept them now.
+Artifacts are written to `/runpod-volume/outputs` (no object-storage upload yet).
