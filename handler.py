@@ -370,6 +370,28 @@ def _text_of(payload: dict) -> str:
     return str(payload.get("text") or payload.get("prompt") or "")
 
 
+# Optional Chatterbox style knobs, clamped to safe ranges. cfg_weight=0 is the
+# upstream recommendation when the reference voice speaks a different language
+# than the target text (reduces accent transfer from the reference clip).
+_CHATTERBOX_STYLE = {"cfg_weight": (0.0, 1.0), "exaggeration": (0.25, 2.0), "temperature": (0.05, 1.5)}
+
+
+def chatterbox_style(payload: dict | None) -> dict:
+    out: dict[str, float] = {}
+    for key, (lo, hi) in _CHATTERBOX_STYLE.items():
+        raw = (payload or {}).get(key)
+        if raw is None or raw == "" or isinstance(raw, bool):
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if val != val:  # NaN
+            continue
+        out[key] = min(hi, max(lo, val))
+    return out
+
+
 def _tts(path: str, payload: dict, dest: str) -> str:
     language = tts_language(payload)
     if language not in CHATTERBOX_LANGS:
@@ -390,6 +412,7 @@ def _tts(path: str, payload: dict, dest: str) -> str:
     kwargs: dict[str, Any] = {}
     if ref:
         kwargs["audio_prompt_path"] = ref
+    kwargs.update(chatterbox_style(payload))
     wav = model.generate(_text_of(payload), language_id=language, **kwargs)
     import torchaudio
 
