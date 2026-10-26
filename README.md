@@ -109,6 +109,28 @@ không mở ra IP công khai.
 
 Chạy lệnh khác qua entrypoint (vẫn có tailnet): `bash /app/scripts/entrypoint.sh python prefetch_volume.py --list`.
 
+#### Đổi auth key Tailscale (hết hạn sau tối đa 90 ngày)
+
+Key chỉ nằm trong env (`TS_AUTHKEY`, hoặc `TAILSCALE_AUTHKEY`), không có trong code hay image. Trên RunPod,
+endpoint `aimx-worker` (`veiasbyphk9rrd`) có env `TS_AUTHKEY={{ RUNPOD_SECRET_aimx_ts_authkey }}`. Key hết hạn chỉ
+làm worker **mới** không vào được tailnet (worker đang chạy không bị ảnh hưởng). Khi đó log có
+`ERROR: Tailscale auth key was rejected`, worker vẫn chạy nhưng không có Postgres/Redis, và job `health` trả về `"tailnet": "rejected"`.
+
+1. Tailscale admin → Settings → Keys → **Generate auth key**: bật **Reusable**, **Ephemeral**, **Pre-approved**
+   (gắn tag nếu ACL dùng tag), chọn thời hạn tối đa 90 ngày, rồi ghi lại ngày hết hạn.
+2. Dokploy → app ai.aimarkets.vn (ai-marketplace-ai) → Environment: đặt `TAILSCALE_AUTHKEY=<key mới>`, **Deploy**.
+   Khi khởi động, app chép key vào RunPod secret `aimx_ts_authkey`, và log ghi `[tailnet-key] WARNING: RunPod secret aimx_ts_authkey updated from TAILSCALE_AUTHKEY`.
+   (Cách khác: RunPod console → Secrets → `aimx_ts_authkey` → Edit Secret Value.)
+3. Worker mới boot sẽ dùng key mới. Để thay ngay các worker đang idle: RunPod → endpoint → Workers → Terminate idle,
+   hoặc chờ chúng tự tắt.
+4. Kiểm tra: gửi job `{"input": {"action": "health", "deep": true}}`. Kết quả đúng là `"tailnet": "ready"` và
+   `checks.postgres.ok`, `checks.redis.ok` đều `true`.
+5. Thu hồi key cũ trong Tailscale admin.
+
+Node server `aimarkets-123host` không dùng auth key sau khi đã join. Hãy **Disable key expiry** cho máy này trong
+Tailscale admin (Machines → aimarkets-123host → … → Disable key expiry); nếu không, node key của server tự hết hạn
+và mọi worker mất kết nối dù auth key vẫn còn hạn.
+
 ### Chạy test
 
 ```bash
@@ -214,7 +236,8 @@ entrypoint:
 2. joins the tailnet as `runpod-aimx-<RUNPOD_POD_ID>` with `--accept-dns=false` (key passed via a 0600 file),
 3. opens `socat` forwards `127.0.0.1:5432` and `127.0.0.1:6379` → `AIMX_TAILNET_HOST` through `tailscale nc`,
 4. waits until Postgres answers an SSLRequest and Redis answers `PING` (`scripts/tailnet_wait.py`),
-5. drops `TS_AUTHKEY` from the environment and starts the worker.
+5. drops `TS_AUTHKEY`/`TAILSCALE_AUTHKEY` from the environment, exports `AIMX_TAILNET_STATUS` (shown as `tailnet` in
+   the health job) and starts the worker.
 
 Without `TS_AUTHKEY` the worker starts directly with whatever DSN you give it. If the tailnet does not come up
 within `AIMX_TS_WAIT_SEC` the worker still starts (Postgres and Redis are optional for serverless jobs) and logs
@@ -225,6 +248,28 @@ On 123HOST, Postgres and Redis listen only on the tailnet IP `100.96.240.104` (c
 `aimx-tsfwd-redis`, `alpine/socat` on `dokploy-network`); the public IP has no 5432/6379. Credentials are
 least-privilege: Postgres role `aimx_worker` owns only database `aimx_worker`; Redis ACL user `aimx-worker` may
 only touch `~aimarkets:aimx:*` with `get set zrevrange zrem sadd srem smembers ping`.
+
+#### Rotating the Tailscale auth key (expires after at most 90 days)
+
+The key lives only in env (`TS_AUTHKEY`, or the alias `TAILSCALE_AUTHKEY`), never in code or the image. On RunPod,
+endpoint `aimx-worker` (`veiasbyphk9rrd`) has `TS_AUTHKEY={{ RUNPOD_SECRET_aimx_ts_authkey }}`. An expired key only
+stops **new** workers from joining; running workers keep their connection. A rejected key logs
+`ERROR: Tailscale auth key was rejected`, the worker still starts without Postgres/Redis, and the `health` job reports
+`"tailnet": "rejected"`. A missing key while a DSN points at 127.0.0.1 reports `"tailnet": "missing"`.
+
+1. Tailscale admin → Settings → Keys → **Generate auth key**: **Reusable**, **Ephemeral**, **Pre-approved**
+   (plus tags if your ACLs use them), expiry up to 90 days; note the expiry date.
+2. Dokploy → the ai.aimarkets.vn app (ai-marketplace-ai) → Environment: set `TAILSCALE_AUTHKEY=<new key>` and **Deploy**.
+   On startup it copies the key into the RunPod secret `aimx_ts_authkey` and logs
+   `[tailnet-key] WARNING: RunPod secret aimx_ts_authkey updated from TAILSCALE_AUTHKEY`. (Or: RunPod console → Secrets → `aimx_ts_authkey` → Edit Secret Value.)
+3. Workers use the new key on their next boot; terminate idle workers in the endpoint's Workers tab to roll at once.
+4. Check with a job `{"input": {"action": "health", "deep": true}}`: expect `"tailnet": "ready"` and
+   `checks.postgres.ok` / `checks.redis.ok` true.
+5. Revoke the old key in the Tailscale admin.
+
+The server node `aimarkets-123host` does not use an auth key once joined. **Disable key expiry** for it in the
+Tailscale admin (Machines → aimarkets-123host → … → Disable key expiry); otherwise its node key expires on its own
+and every worker loses Postgres/Redis even with a valid auth key.
 
 The marketplace must add the new kinds (`bg_remove`, `stt`, `ocr`, `embed`, `rerank`, `music`, `llm`) to
 `providers/aimx_models.py` before enqueuing them for pod mode; serverless/HTTP accept them now.
