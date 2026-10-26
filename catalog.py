@@ -24,8 +24,8 @@ VOLUME = os.environ.get("AIMX_VOLUME", "/runpod-volume")
 
 # Kinds the marketplace queue knows today (providers/aimx_models.py in
 # ai-marketplace-ai). Admission control in pod mode uses exactly these sets.
-VIDEO_KINDS = frozenset({"fast", "talking", "film"})
-LIGHT_KINDS = frozenset({"tts", "image"})
+VIDEO_KINDS = frozenset({"fast", "talking", "film", "i2v"})
+LIGHT_KINDS = frozenset({"tts", "image", "image_edit"})
 TRAIN_KINDS = frozenset({"train"})
 QUEUE_KINDS = VIDEO_KINDS | LIGHT_KINDS | TRAIN_KINDS
 
@@ -138,6 +138,40 @@ MODELS: dict[str, dict[str, Any]] = {
         "need": ["model_index.json"],
         "notes": "Default text/image-to-video, 720p 24 fps.",
     },
+    "wan2.2-i2v-a14b": {
+        "id": "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+        "revision": "596658fd9ca6b7b71d5057529bbf319ecbc61d74",
+        "license": "Apache-2.0",
+        "tasks": ["i2v"],
+        "dir": "wan2.2-i2v-a14b",
+        "default": False,
+        "manual": True,
+        "approx_gb": 72,
+        "ignore": _DIFFUSERS_IGNORE,
+        "need": ["model_index.json", "AIMX_SOURCE.json"],
+        "lora": {"id": "lightx2v/Wan2.2-Lightning", "revision": "18bccf8884ec0a078eed79785eb4ef13ea16ce1e",
+                 "license": "Apache-2.0", "dir": "lightning",
+                 "files": ["high_noise_model.safetensors", "low_noise_model.safetensors"]},
+        "notes": "AI Film image-to-video, 720p 16 fps. Two 14B experts stored in bf16 (converted from the fp32 "
+                 "release) + 4-step Lightning LoRA (Apache-2.0). Placed by scripts/fetch_film_models.py, "
+                 "not by prefetch (the fp32 release would not fit).",
+    },
+    "qwen-image-edit-2511": {
+        "id": "Qwen/Qwen-Image-Edit-2511",
+        "revision": "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9",
+        "license": "Apache-2.0",
+        "tasks": ["image_edit"],
+        "dir": "qwen-image-edit-2511",
+        "default": False,
+        "manual": True,
+        "approx_gb": 59,
+        "ignore": _DIFFUSERS_IGNORE,
+        "need": ["model_index.json", "AIMX_SOURCE.json"],
+        "lora": {"id": "lightx2v/Qwen-Image-Edit-2511-Lightning", "revision": "107d238d68b8387e32843d0b4a2e24ceb0d3ad86",
+                 "license": "Apache-2.0", "dir": "lightning",
+                 "files": ["Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"]},
+        "notes": "AI Film keyframes / image edit, 1-3 reference images, 8-step Lightning LoRA (Apache-2.0).",
+    },
     "cogvideox-2b": {
         "id": "THUDM/CogVideoX-2b",
         "license": "Apache-2.0",
@@ -238,6 +272,9 @@ ALIASES: dict[str, str] = {
     "flux": "flux-schnell", "flux1": "flux-schnell", "flux.1": "flux-schnell", "flux1-schnell": "flux-schnell",
     "schnell": "flux-schnell",
     "wan": "wan2.2-ti2v-5b", "wan2.2": "wan2.2-ti2v-5b", "video": "wan2.2-ti2v-5b",
+    "wan-i2v": "wan2.2-i2v-a14b", "wan2.2-i2v": "wan2.2-i2v-a14b", "wan-2-2-i2v-720": "wan2.2-i2v-a14b",
+    "i2v": "wan2.2-i2v-a14b",
+    "qwen-image-edit": "qwen-image-edit-2511", "image-edit": "qwen-image-edit-2511", "image_edit": "qwen-image-edit-2511",
     "cogvideox": "cogvideox-2b", "cogvideo": "cogvideox-2b", "zai-org/cogvideox-2b": "cogvideox-2b",
     "bg": "birefnet", "bg_remove": "birefnet", "rembg": "birefnet",
     "whisper": "whisper-large-v3-turbo", "stt": "whisper-large-v3-turbo",

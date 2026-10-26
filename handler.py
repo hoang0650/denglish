@@ -71,6 +71,10 @@ _TASK = {
     "fast": "fast",
     "talking": "talking",
     "film": "film",
+    "i2v": "i2v",
+    "image_to_video": "i2v",
+    "image_edit": "image_edit",
+    "edit_image": "image_edit",
     "bg_remove": "bg_remove",
     "remove_bg": "bg_remove",
     "background_removal": "bg_remove",
@@ -347,6 +351,12 @@ def _infer(task: str, row: dict, payload: dict) -> dict:
     if task == "image":
         dest = _image(row, payload, _out("image", "png"))
         return {"artifact_url": dest, "image_url": dest}
+    if task == "i2v":
+        dest, meta = _i2v(row, payload, _out("video", "mp4"))
+        return {"artifact_url": dest, "video_url": dest, **meta}
+    if task == "image_edit":
+        dest, meta = _image_edit(row, payload, _out("image", "png"))
+        return {"artifact_url": dest, "image_url": dest, **meta}
     if task in VIDEO_KINDS:
         dest = _video(row, payload, _out("video", "mp4"))
         return {"artifact_url": dest, "video_url": dest}
@@ -602,6 +612,190 @@ def _video(row: dict, payload: dict, dest: str) -> str:
     frames = pipe(**kwargs).frames[0]
     export_to_video(frames, dest, fps=fps)
     return dest
+
+
+# ------------------------------------------------------------- AI Film models
+# Wan2.2-I2V-A14B (two 14B experts, bf16 on the volume) and Qwen-Image-Edit-2511, both Apache-2.0,
+# each with an Apache-2.0 Lightning LoRA fused at load (4 / 8 steps, CFG 1). Weights load with
+# local_files_only from /runpod-volume; nothing is downloaded at run time.
+
+WAN_FPS = 16
+_QWEN_LIGHTNING_SCHEDULER = {
+    "base_image_seq_len": 256, "base_shift": 1.0986122886681098, "invert_sigmas": False,
+    "max_image_seq_len": 8192, "max_shift": 1.0986122886681098, "num_train_timesteps": 1000, "shift": 1.0,
+    "shift_terminal": None, "stochastic_sampling": False, "time_shift_type": "exponential",
+    "use_beta_sigmas": False, "use_dynamic_shifting": True, "use_exponential_sigmas": False,
+    "use_karras_sigmas": False,
+}
+
+
+def _vram_gb() -> float:
+    try:
+        import torch
+
+        return torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _lora_paths(row: dict) -> list[str]:
+    spec = (catalog.MODELS.get(row["key"]) or {}).get("lora") or {}
+    base = os.path.join(row["volume"], spec.get("dir", "lightning"))
+    return [os.path.join(base, os.path.basename(f)) for f in spec.get("files", [])]
+
+
+def _fuse(pipe, path: str, name: str, component: str) -> None:
+    """Load one LoRA into `component`, fuse it into the weights and drop the adapter."""
+    kwargs = {"load_into_transformer_2": True} if component == "transformer_2" else {}
+    pipe.load_lora_weights(path, adapter_name=name, **kwargs)
+    pipe.fuse_lora(components=[component], adapter_names=[name], lora_scale=1.0)
+    pipe.unload_lora_weights()
+
+
+def _place(pipe, need_gb: float) -> str:
+    """Whole pipeline on the GPU when it fits, else model CPU offload (one component at a time)."""
+    if _vram_gb() >= need_gb:
+        pipe.to(_device())
+        return "gpu"
+    pipe.enable_model_cpu_offload()
+    return "offload"
+
+
+def _load_wan_i2v(row: dict):
+    import torch
+    from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
+
+    vae = AutoencoderKLWan.from_pretrained(row["volume"], subfolder="vae", torch_dtype=torch.float32,
+                                           local_files_only=True)
+    pipe = WanImageToVideoPipeline.from_pretrained(row["volume"], vae=vae, torch_dtype=torch.bfloat16,
+                                                   local_files_only=True)
+    hi, lo = _lora_paths(row)
+    _fuse(pipe, hi, "lightning_hi", "transformer")
+    _fuse(pipe, lo, "lightning_lo", "transformer_2")
+    # 57 GB of experts + 11 GB text encoder + activations: keep only the active expert on 80 GB cards.
+    pipe._aimx_place = _place(pipe, float(os.environ.get("AIMX_WAN_FULL_GPU_GB", "120")))
+    return pipe
+
+
+def _load_qwen_edit(row: dict):
+    import torch
+    from diffusers import FlowMatchEulerDiscreteScheduler, QwenImageEditPlusPipeline
+
+    scheduler = FlowMatchEulerDiscreteScheduler.from_config(_QWEN_LIGHTNING_SCHEDULER)
+    pipe = QwenImageEditPlusPipeline.from_pretrained(row["volume"], scheduler=scheduler, torch_dtype=torch.bfloat16,
+                                                     local_files_only=True)
+    _fuse(pipe, _lora_paths(row)[0], "lightning", "transformer")
+    pipe._aimx_place = _place(pipe, float(os.environ.get("AIMX_QWEN_FULL_GPU_GB", "75")))
+    return pipe
+
+
+def _images_of(payload: dict, limit: int = 3) -> list[str]:
+    out: list[str] = []
+    items = payload.get("images") or payload.get("image_urls") or []
+    if isinstance(items, str):
+        items = [items]
+    for item in list(items)[:limit]:
+        s = str(item or "")
+        if s.startswith(("http://", "https://")):
+            out.append(media.fetch(s))
+        elif s:
+            out.append(media.from_base64(s, ".png"))
+    if not out:
+        one = media.resolve(payload, "image", VOLUME)
+        if one:
+            out.append(one)
+    return out
+
+
+def _fit_720p(img, long_side: int = 1280, short_side: int = 720):
+    """Landscape -> 1280x720, portrait -> 720x1280, square -> 960x960 (multiples of 16), center crop."""
+    from PIL import ImageOps
+
+    w, h = img.size
+    if abs(w - h) / max(w, h) < 0.1:
+        size = (960, 960)
+    elif w > h:
+        size = (long_side, short_side)
+    else:
+        size = (short_side, long_side)
+    return ImageOps.fit(img.convert("RGB"), size), size
+
+
+def _i2v(row: dict, payload: dict, dest: str) -> tuple[str, dict]:
+    import torch
+    from diffusers.utils import export_to_video, load_image
+
+    paths = _images_of(payload, 1)
+    if not paths:
+        raise ValueError("i2v needs image_url, image_base64 or images[0]")
+    seconds = max(1, min(int(float(payload.get("duration") or payload.get("seconds") or 5)), 10))
+    frames = WAN_FPS * seconds + 1
+    t0 = time.perf_counter()
+    pipe = _get_cached(row["key"], True, lambda: _load_wan_i2v(row))
+    load_s = time.perf_counter() - t0
+    image, (width, height) = _fit_720p(load_image(paths[0]))
+    kwargs: dict[str, Any] = {
+        "image": image,
+        "prompt": _text_of(payload),
+        "negative_prompt": str(payload.get("negative_prompt") or ""),
+        "height": height,
+        "width": width,
+        "num_frames": frames,
+        "num_inference_steps": int(payload.get("steps") or 4),
+        "guidance_scale": 1.0,
+        "guidance_scale_2": 1.0,
+    }
+    seed = payload.get("seed")
+    if seed is not None and int(seed) >= 0:
+        kwargs["generator"] = torch.Generator("cpu").manual_seed(int(seed))
+    t1 = time.perf_counter()
+    out = pipe(**kwargs).frames[0]
+    export_to_video(out, dest, fps=WAN_FPS)
+    return dest, {"seconds": seconds, "frames": frames, "fps": WAN_FPS, "width": width, "height": height,
+                  "load_seconds": round(load_s, 2), "gen_seconds": round(time.perf_counter() - t1, 2),
+                  "placement": getattr(pipe, "_aimx_place", ""), "gpu": _gpu_name()}
+
+
+def _image_edit(row: dict, payload: dict, dest: str) -> tuple[str, dict]:
+    import torch
+    from PIL import Image
+
+    paths = _images_of(payload, 3)
+    t0 = time.perf_counter()
+    pipe = _get_cached(row["key"], True, lambda: _load_qwen_edit(row))
+    load_s = time.perf_counter() - t0
+    w, h = 1024, 1024
+    size = str(payload.get("size") or "").replace("x", "*")
+    if "*" in size:
+        w, h = (int(v) for v in size.split("*", 1))
+    images = [Image.open(p).convert("RGB") for p in paths] or [Image.new("RGB", (w, h), "white")]
+    kwargs: dict[str, Any] = {
+        "image": images,
+        "prompt": _text_of(payload),
+        "negative_prompt": " ",
+        "num_inference_steps": int(payload.get("steps") or 8),
+        "true_cfg_scale": 1.0,
+        "guidance_scale": 1.0,
+        "height": h,
+        "width": w,
+    }
+    seed = payload.get("seed")
+    if seed is not None and int(seed) >= 0:
+        kwargs["generator"] = torch.Generator("cpu").manual_seed(int(seed))
+    t1 = time.perf_counter()
+    pipe(**kwargs).images[0].save(dest)
+    return dest, {"width": w, "height": h, "references": len(paths), "load_seconds": round(load_s, 2),
+                  "gen_seconds": round(time.perf_counter() - t1, 2), "placement": getattr(pipe, "_aimx_place", ""),
+                  "gpu": _gpu_name()}
+
+
+def _gpu_name() -> str:
+    try:
+        import torch
+
+        return torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _bg_remove(path: str, payload: dict, dest: str) -> str:

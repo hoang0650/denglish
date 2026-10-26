@@ -264,6 +264,11 @@ def prefetch(models: Any = None, *, root: Optional[str] = None) -> dict[str, Any
         print(f"[prefetch] warning: ~{need_gb} GB needed, {free_gb:.1f} GB free on {paths['root']}", file=sys.stderr, flush=True)
     report: dict[str, Any] = {}
     for key in chosen:
+        if MODELS[key].get("manual"):
+            # Placed by scripts/fetch_film_models.py (bf16 conversion); never pulled raw here.
+            report[key] = {"status": "cached" if is_ready(key, paths[key]) else "manual",
+                           "note": "run scripts/fetch_film_models.py on a pod with the volume mounted"}
+            continue
         try:
             report[key] = _fetch(key, paths[key])
         except Exception as exc:  # noqa: BLE001
