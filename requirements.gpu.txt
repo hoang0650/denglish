@@ -6,7 +6,7 @@
 diffusers==0.37.1
 transformers==5.2.0
 accelerate==1.15.0
-peft==0.21.2
+peft==0.18.0  # >=0.19 refuses torchao<0.16 (TTS pins torchao 0.13)
 safetensors==0.5.3
 sentencepiece==0.2.2
 ftfy==6.3.1
