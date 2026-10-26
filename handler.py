@@ -209,6 +209,8 @@ def health_body(deep: bool = False) -> dict:
         "models": models,
         "blocked": sorted(BLOCKED_MODELS),
         "db": db.enabled(),
+        # Set by scripts/entrypoint.sh: off|missing|ready|degraded|rejected|timeout|failed|unavailable.
+        "tailnet": (os.environ.get("AIMX_TAILNET_STATUS") or "off").strip().lower(),
         **({"checks": {"postgres": db.check(), "redis": _redis_check()}} if deep else {}),
     }
 
