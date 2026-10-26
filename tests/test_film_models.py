@@ -19,7 +19,7 @@ def test_prefetch_never_pulls_manual_models(tmp_path):
 
 
 def test_fit_720p_sizes():
-    from PIL import Image
+    Image = __import__("pytest").importorskip("PIL.Image")
 
     assert handler._fit_720p(Image.new("RGB", (1920, 1080)))[1] == (1280, 720)
     assert handler._fit_720p(Image.new("RGB", (1080, 1920)))[1] == (720, 1280)
