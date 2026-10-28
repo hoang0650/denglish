@@ -2,7 +2,7 @@ FROM ryshe/terraria:tshock-1.4.5.8-6.2.1 AS terraria
 FROM mcr.microsoft.com/dotnet/runtime:9.0 AS dotnet
 FROM eclipse-temurin:25-jre-noble
 ENV DEBIAN_FRONTEND=noninteractive DOTNET_ROOT=/opt/dotnet DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
-RUN apt-get update && apt-get install -y --no-install-recommends xrdp xorgxrdp xserver-xorg-core xfce4-session xfce4-panel xfwm4 xfdesktop4 xfce4-settings thunar xfce4-terminal dbus-x11 supervisor python3 openssl sudo nano procps libicu74 libssl3t64 \
+RUN apt-get update && apt-get install -y --no-install-recommends xrdp xorgxrdp xserver-xorg-core xfce4-session xfce4-panel xfwm4 xfdesktop4 xfce4-settings thunar xfce4-terminal dbus dbus-system-bus-common dbus-user-session dbus-x11 supervisor python3 openssl sudo nano procps libicu74 libssl3t64 \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --uid 1001 --shell /bin/bash player && usermod -aG sudo player \
  && passwd -l root && mkdir -p /run/xrdp /run/dbus /var/log/supervisor \
